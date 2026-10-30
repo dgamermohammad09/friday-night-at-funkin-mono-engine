@@ -5,18 +5,18 @@ using FNF_MonoGame.Engine;
 namespace FNF_MonoGame.Scenes;
 
 /// <summary>
-/// Character Select scene — faithful recreation of the original FNF CharSelectSubState.
-/// 3×3 icon grid, animated player/spectator, stage background with crowd/speakers/bar,
-/// cursor navigation, confirm → Freeplay, back → Freeplay.
+/// Character Select scene � faithful recreation of the original FNF CharSelectSubState.
+/// 3�3 icon grid, animated player/spectator, stage background with crowd/speakers/bar,
+/// cursor navigation, confirm ? Freeplay, back ? Freeplay.
 /// </summary>
-public class CharacterSelectScene : Scene
+public partial class CharacterSelectScene : Scene
 {
-    // Available playable characters (id → grid position 0-8)
-    private readonly string[] _charIds = { "bf", "pico" };
+    // Available playable characters (id ? grid position 0-8)
+    private string[] _charIds = { "bf", "pico" }; // filled from PlayerRegistry in Load()
     private readonly Dictionary<int, string> _availableChars = new();
 
     // Per-character offsets. Original FNF: gfChill(0,0), playerChill(0,0) with
-    // applyStageMatrix:true — AnimateAtlas internal M3D transforms position sprites correctly.
+    // applyStageMatrix:true � AnimateAtlas internal M3D transforms position sprites correctly.
     // Offsets here are additional adjustments only (all zero to match original).
     private static readonly Dictionary<string, Vector2> _playerOffsets = new()
     {
@@ -29,11 +29,11 @@ public class CharacterSelectScene : Scene
         { "pico", new Vector2(0f, 0f) }
     };
 
-    // Grid cursor (original: cursorX/cursorY range -1..1, maps to 3×3 grid center at index 4)
+    // Grid cursor (original: cursorX/cursorY range -1..1, maps to 3�3 grid center at index 4)
     private int _cursorX = 0;
     private int _cursorY = 0;
 
-    // Grid layout (original: grpIcons at x=450, y=120, spread 107×127)
+    // Grid layout (original: grpIcons at x=450, y=120, spread 107�127)
     private const float GRID_X = 450f;
     private const float GRID_Y = 120f;
     private const float GRID_X_SPREAD = 107f;
@@ -84,6 +84,9 @@ public class CharacterSelectScene : Scene
     // Character icon spritesheets (grid icons)
     private readonly Dictionary<string, SpriteSheet> _iconSheets = new();
     private readonly Dictionary<string, AnimatedSprite> _iconSprites = new();
+    // PixelatedIcon grid icons (original CharSelectSubState.initLocks: freeplay/icons/<id>pixel, setGraphicSize(128,128))
+    private readonly Dictionary<string, PixelatedIcon> _pixIcons = new();
+    private readonly Dictionary<string, Vector2> _pixIconFrameSize = new();
     private Texture2D _lockedIconTex;
 
     // Character title nametag
@@ -168,19 +171,21 @@ public class CharacterSelectScene : Scene
 
     public override void Load()
     {
+        Game.Discord?.SetCharacterSelectState();
+
         // Disable debug overlay in character select (user-reported stray text)
 #if !XBOX_UWP
         DebugOverlay.Visible = false;
         DebugOverlay.ClearPins();
 #endif
 
-        // Set up available character positions (original: position from player registry)
-        _availableChars[4] = "bf";   // Center of 3×3 grid
-        if (_charIds.Length > 1)
-            _availableChars[5] = "pico"; // Right of center
+        // Set up available character positions (CharSelectSubState.loadAvailableCharacters):
+        // targetPosition = playerData.charSelect.position; while (taken) targetPosition += 1.
+        LoadAvailableCharactersFromRegistry(); // PlayerRegistry: base + V-Slice mod players (CharacterSelectScene.Players.cs)
+        InitUnlockSlots(); // CharSelectSubState.initLocks (Engine/Unlocks.cs)
 
         // Read remembered character
-        _curChar = HighscoreManager.Data.SelectedCharacter ?? "bf";
+        _curChar = Environment.GetEnvironmentVariable("FNF_CS_CHAR") ?? HighscoreManager.Data.SelectedCharacter ?? "bf"; // FNF_CS_CHAR: dev hook
 
         // Set cursor to remembered character position
         foreach (var kvp in _availableChars)
@@ -273,20 +278,23 @@ public class CharacterSelectScene : Scene
                 _loadStatus = "Loading icons...";
                 foreach (var cn in _charIds)
                 {
-                    var iconSheet = SpriteSheet.Load(Game, b + "/" + cn + "/icon");
+                    string pixName = PixelatedIcon.ResolveIconName(cn);
+                    var iconSheet = pixName == null ? null : SpriteSheet.Load(Game, PixelatedIcon.IconDir + pixName + "pixel"); AliasIconAnims(iconSheet);
                     if (iconSheet != null)
                     {
                         _iconSheets[cn] = iconSheet;
-                        var spr = new AnimatedSprite { Sheet = iconSheet };
-                            var anim = FindAnim(iconSheet, "BF ICON", "PICO ICON", "idle", "icon");
-                            if (anim != null) spr.PlayAnimation(anim, true, false); // Don't auto-loop
-                            _iconSprites[cn] = spr;
+                        var pi = new PixelatedIcon { Sheet = iconSheet };
+                        pi.Play("idle", true);
+                        _pixIcons[cn] = pi;
+                        var f0 = pi.Frame;
+                        _pixIconFrameSize[cn] = f0 == null ? new Vector2(32, 32) : new Vector2(f0.FrameWidth > 0 ? f0.FrameWidth : f0.SourceRect.Width, f0.FrameHeight > 0 ? f0.FrameHeight : f0.SourceRect.Height);
                     }
                     var titleTex = Assets.LoadTexture(b + "/" + cn + "/title.png");
                     if (titleTex != null && titleTex != Assets.Pixel)
                         _titleTextures[cn] = titleTex;
                 }
                 _lockedIconTex = Assets.LoadTexture(b + "/locked/icon.png");
+                LoadLocks(); // Lock.hx texture atlas (tinted per slot)
                 if (_lockedIconTex == Assets.Pixel) _lockedIconTex = null;
                 var lockedTitle = Assets.LoadTexture(b + "/locked/title.png");
                 if (lockedTitle != null && lockedTitle != Assets.Pixel)
@@ -334,19 +342,19 @@ public class CharacterSelectScene : Scene
 
             case 6:
                 _loadStatus = "Rendering...";
-                // Convert RawCompositeData → pre-rendered CompositeAnimations (GPU work, main thread).
+                // Convert RawCompositeData ? pre-rendered CompositeAnimations (GPU work, main thread).
                 // PreRenderComposite uses full affine Matrix transforms for pixel-perfect body part
-                // assembly — no skew/shear loss from runtime M3D decomposition.
+                // assembly � no skew/shear loss from runtime M3D decomposition.
                 _crowdSheet?.RenderRawComposites(Game.GraphicsDevice);
                 _stageSheet?.RenderRawComposites(Game.GraphicsDevice);
                 _speakersSheet?.RenderRawComposites(Game.GraphicsDevice);
                 _barSheet?.RenderRawComposites(Game.GraphicsDevice);
-                // Player/spectator: skip RenderRawComposites — keep RawCompositeData alive
+                // Player/spectator: skip RenderRawComposites � keep RawCompositeData alive
                 // for runtime per-part Matrix rendering (bypasses broken pre-rendering pipeline)
 
                 // MonoGame 3.8.1 DesktopGL SpriteBatch automatically handles Y-flip
                 // compensation when drawing from RenderTarget2D textures. No need to
-                // convert to regular Texture2D — GetData on OpenGL RTs can return
+                // convert to regular Texture2D � GetData on OpenGL RTs can return
                 // Y-flipped pixel data, corrupting the converted texture.
 
                 // Replay animations on deferred sprites
@@ -358,8 +366,7 @@ public class CharacterSelectScene : Scene
 
             case 7:
                 _loadStatus = "Starting...";
-                Audio.PlayMusic("menus/character_select/character_select", true);
-                _allowInput = true;
+                StartCsIntroFlow(); // IntroSubState + checkNewChar (CharacterSelectScene.Unlock.cs)
                 _fadeAlpha = 1f;
                 _introTimer = 0;
                 _cameraY = -150f; // Camera starts panned up (original: camFollow.y -= 150)
@@ -383,9 +390,9 @@ public class CharacterSelectScene : Scene
     {
         string b = "menus/character_select";
         foreach (var cn in _charIds)
-        {
-            // Player sprite (BF/Pico on the right) — NO PremultiplyAlpha (use _compositeBlend)
-            var ps = SpriteSheet.Load(Game, b + "/" + cn + "/player", preRenderComposites: true, preRenderFilter: new[] { "Enter", "Idle", "Confirm", "Cancel", "Exit" }, deferComposites: true, applyStageInstanceTransform: true);
+        { if (LoadRegistryChill(cn)) continue; // mod players: charSelect/<id>Chill atlas or Sparrow
+            // Player sprite (BF/Pico on the right) � NO PremultiplyAlpha (use _compositeBlend)
+            var ps = SpriteSheet.Load(Game, b + "/" + cn + "/player", preRenderComposites: true, preRenderFilter: new[] { "Enter", "Idle", "Confirm", "Cancel", "Exit", "slidein", "idle", "select", "deselect", "slideout", "unlock" }, deferComposites: true, applyStageInstanceTransform: true);
             Console.WriteLine($"[CharSelect] {cn}/player: loaded={ps != null} tex={ps?.Texture != null} anims=[{(ps != null ? string.Join(",", ps.Animations.Keys) : "")}] raw=[{(ps != null ? string.Join(",", ps.RawCompositeData.Keys) : "")}] rawCounts=[{(ps != null ? string.Join(",", ps.RawCompositeData.Select(r => $"{r.Key}:{r.Value.Count}t/{(r.Value.Count > 0 ? r.Value[0].Count.ToString() : "0")}p")) : "")}]");
             if (ps != null)
             {
@@ -409,8 +416,8 @@ public class CharacterSelectScene : Scene
                 _playerAnims[cn] = anim;
             }
 
-            // Spectator sprite (GF/Nene on the left) — NO PremultiplyAlpha (use _compositeBlend)
-            var ss = SpriteSheet.Load(Game, b + "/" + cn + "/spectator", preRenderComposites: true, preRenderFilter: new[] { "Enter", "IdleLeft", "IdleRight", "Confirm", "Cancel", "Exit" }, deferComposites: true, applyStageInstanceTransform: true);
+            // Spectator sprite (GF/Nene on the left) � NO PremultiplyAlpha (use _compositeBlend)
+            var ss = SpriteSheet.Load(Game, b + "/" + cn + "/spectator", preRenderComposites: true, preRenderFilter: new[] { "Enter", "IdleLeft", "IdleRight", "Confirm", "Cancel", "Exit", "idle", "confirm", "deselect" }, deferComposites: true, applyStageInstanceTransform: true);
             if (ss != null)
             {
                 _spectatorSheets[cn] = ss;
@@ -466,7 +473,7 @@ public class CharacterSelectScene : Scene
             if (anim != null) _barSprite.PlayAnimation(anim, true, true);
         }
 
-        // Player animations (BF/Pico) — replay Enter→Idle chain
+        // Player animations (BF/Pico) � replay Enter?Idle chain
         foreach (var cn in _charIds)
         {
             if (_playerAnims.TryGetValue(cn, out var pa) && _playerSheets.TryGetValue(cn, out var pSheet))
@@ -489,7 +496,7 @@ public class CharacterSelectScene : Scene
             }
         }
 
-        // Spectator animations (GF/Nene) — replay Enter→Idle chain with dual-dance
+        // Spectator animations (GF/Nene) � replay Enter?Idle chain with dual-dance
         foreach (var cn in _charIds)
         {
             if (_spectatorAnims.TryGetValue(cn, out var sa) && _spectatorSheets.TryGetValue(cn, out var sSheet))
@@ -555,7 +562,9 @@ public class CharacterSelectScene : Scene
 
     public override void Unload()
     {
+        DisposeUnlockFlow();
         _crowdSheet?.Dispose();
+        _lockTl?.White.Dispose();
         _stageSheet?.Dispose();
         _speakersSheet?.Dispose();
         _barSheet?.Dispose();
@@ -570,6 +579,61 @@ public class CharacterSelectScene : Scene
 
     public override void Update(GameTime gameTime)
     {
+        UpdateCore(gameTime);
+        if (!_loading) { DevHooks((float)gameTime.ElapsedGameTime.TotalSeconds); UpdateLockAnims(); UpdateUnlockFlow((float)gameTime.ElapsedGameTime.TotalSeconds); }
+    }
+
+    // Dev hooks (orig module tools_gp/charsel.hxc.tpl): FNF_SHOTS_CSTIME=1 -> FNF_SHOTS in seconds since the scene finished
+    // loading; FNF_CS_LEFT_AT (cursorX = -1), FNF_CS_SEL_AT (pressedSelect = true), FNF_CS_DESEL_AT (pressedSelect = false).
+    public float DevElapsed = -1f;
+    private int _devStep;
+    private static float DevAt(string k) => float.TryParse(Environment.GetEnvironmentVariable(k), System.Globalization.NumberStyles.Float,
+        System.Globalization.CultureInfo.InvariantCulture, out var v) ? v : float.MaxValue;
+    private void DevHooks(float dt)
+    {
+        DevElapsed = DevElapsed < 0 ? 0 : DevElapsed + dt;
+        if (_devStep == 0 && DevElapsed >= DevAt("FNF_CS_LEFT_AT")) { _devStep = 1; _cursorX = Environment.GetEnvironmentVariable("FNF_CS_DIR") == "1" ? 1 : -1; }
+        if (_devStep == 1 && DevElapsed >= DevAt("FNF_CS_SEL_AT")) { _devStep = 2; _pressedSelect = true; _selectTimer = 999f; }
+        if (_devStep == 2 && DevElapsed >= DevAt("FNF_CS_DESEL_AT")) { _devStep = 3; _pressedSelect = false; }
+    }
+    public string DevIconInfo
+    {
+        get
+        {
+            var sb = new System.Text.StringBuilder($"t={DevElapsed:F3} sel={GetCurrentSelected()} autoFollow={_autoFollow}");
+            foreach (var kv in _availableChars)
+                if (_pixIcons.TryGetValue(kv.Value, out var pi))
+                    sb.Append($" [{kv.Key} {kv.Value} anim={pi.CurAnim}:{pi.CurFrame} rev={pi.Reversed} sel={(kv.Key == GetCurrentSelected())}]");
+            for (int li = 0; li < 9; li++) if (!_availableChars.ContainsKey(li) && _lockAnims[li] != null && (li == 0 || li == 5)) sb.Append($" [lock{li} anim={_lockAnims[li].Name}:{_lockAnims[li].Frame} fin={_lockAnims[li].Finished}]");
+            return sb.ToString();
+        }
+    }
+
+    /// <summary>CharSelectSubState.updateLockAnims, PixelatedIcon branch (member.ID == 0).</summary>
+    private void UpdateLockAnims()
+    {
+        int sel = GetCurrentSelected();
+        UpdateLockStates(sel, Input.ConfirmPressed);
+        foreach (var kv in _availableChars)
+        {
+            if (kv.Key != sel) continue;
+            if (!_pixIcons.TryGetValue(kv.Value, out var memb)) continue;
+            if (_pressedSelect && memb.CurAnim == "idle") memb.Play("confirm");
+            if (_autoFollow && !_pressedSelect && memb.CurAnim != "idle")
+            {
+                memb.Play("confirm", false, true);
+                memb.ExtraOnFinish = _ =>
+                {
+                    memb.Play("idle");
+                    memb.ExtraOnFinish = null; // animation.onFinish.removeAll()
+                    memb.OwnOnFinish = false;
+                };
+            }
+        }
+    }
+
+    private void UpdateCore(GameTime gameTime)
+    {
         float dt = (float)gameTime.ElapsedGameTime.TotalSeconds;
 
         // Phased loading
@@ -579,7 +643,7 @@ public class CharacterSelectScene : Scene
             return;
         }
 
-        // Fade in from black (original: FlxTween blackScreen alpha 0→1, 0.8s linear)
+        // Fade in from black (original: FlxTween blackScreen alpha 0?1, 0.8s linear)
         if (_fadeAlpha > 0)
         {
             _introTimer += dt;
@@ -617,7 +681,7 @@ public class CharacterSelectScene : Scene
             _blurSlideY = 220f * e;
             _iconSlideY = 300f * e;
             _cursorAlpha = 1f - ExpoOut(t);
-            // Fade to black during exit (original: FlxTween fadeAlpha 0→1, 0.8s linear)
+            // Fade to black during exit (original: FlxTween fadeAlpha 0?1, 0.8s linear)
             _fadeAlpha = t;
             // Camera pans up during exit (original: camFollow.y - 150, backIn)
             _cameraY = _exitCameraStartY + (-150f * e);
@@ -639,11 +703,13 @@ public class CharacterSelectScene : Scene
         // posX/posY are 0-2, _cursorX/_cursorY are -1..1, so posX = _cursorX+1.
         // Includes _iconSlideY so cursor follows the icon group during intro/exit slide animations.
         {
-            _cursorIntended = new Vector2(
-                GRID_X_SPREAD * _cursorX + (GRID_X + GRID_X_SPREAD),
-                GRID_Y_SPREAD * _cursorY + (GRID_Y + GRID_Y_SPREAD) + _iconSlideY);
+            // CharSelectSubState.hx:947-953: cursorLocIntended = cursorFactor(110)*cursor + FlxG.size/2 - main.size/2 + (-16,-48)
+            // (cursors have scrollFactor 0 and do not slide with the icon intro).
+            float cw = _selectorTex?.Width ?? 124, ch = _selectorTex?.Height ?? 112;
+            _cursorIntended = new Vector2(110f * _cursorX + 640f - cw / 2f - 16f, 110f * _cursorY + 360f - ch / 2f - 48f);
             if (!_cursorInitialized)
             {
+                // snapToLocation (create -> instant)
                 _cursorMain = _cursorIntended;
                 _cursorLightBlue = _cursorIntended;
                 _cursorDarkBlue = _cursorIntended;
@@ -651,19 +717,15 @@ public class CharacterSelectScene : Scene
             }
             else
             {
-                // Decay rates — faster than original for snappier feel.
-                // Original CharSelectCursors.hx: sp=0.1/0.202/0.404 → 0.4343/0.6252/1.1033
-                // Reduced by ~50% for quicker cursor snap to target.
-                _cursorMain.X = SmoothLerp(_cursorMain.X, _cursorIntended.X, dt, 0.20f);
-                _cursorMain.Y = SmoothLerp(_cursorMain.Y, _cursorIntended.Y, dt, 0.20f);
-                _cursorLightBlue.X = SmoothLerp(_cursorLightBlue.X, _cursorMain.X, dt, 0.30f);
-                _cursorLightBlue.Y = SmoothLerp(_cursorLightBlue.Y, _cursorMain.Y, dt, 0.30f);
-                _cursorDarkBlue.X = SmoothLerp(_cursorDarkBlue.X, _cursorIntended.X, dt, 0.55f);
-                _cursorDarkBlue.Y = SmoothLerp(_cursorDarkBlue.Y, _cursorIntended.Y, dt, 0.55f);
-                // Snap within 1 pixel (original: only main cursor snaps — CharSelectCursors.hx)
-                if (MathF.Abs(_cursorMain.X - _cursorIntended.X) < 1f) _cursorMain.X = _cursorIntended.X;
-                if (MathF.Abs(_cursorMain.Y - _cursorIntended.Y) < 1f) _cursorMain.Y = _cursorIntended.Y;
+                // CharSelectCursors.lerpToLocation: smoothLerpPrecision(.., FlxG.elapsed, 0.1 / 0.202 / 0.404), main snapped within 1 px
+                _cursorMain.X = SnapTo(SmoothLerpPrecision(_cursorMain.X, _cursorIntended.X, dt, 0.1f), _cursorIntended.X);
+                _cursorMain.Y = SnapTo(SmoothLerpPrecision(_cursorMain.Y, _cursorIntended.Y, dt, 0.1f), _cursorIntended.Y);
+                _cursorLightBlue.X = SmoothLerpPrecision(_cursorLightBlue.X, _cursorMain.X, dt, 0.202f);
+                _cursorLightBlue.Y = SmoothLerpPrecision(_cursorLightBlue.Y, _cursorMain.Y, dt, 0.202f);
+                _cursorDarkBlue.X = SmoothLerpPrecision(_cursorDarkBlue.X, _cursorIntended.X, dt, 0.404f);
+                _cursorDarkBlue.Y = SmoothLerpPrecision(_cursorDarkBlue.Y, _cursorIntended.Y, dt, 0.404f);
             }
+            _cursorColorTime += dt;
         }
 
         // Camera auto-follow (original: camFollow = screenCenter + cursor*10, camera.follow LOCKON 0.01)
@@ -715,7 +777,9 @@ public class CharacterSelectScene : Scene
             }
         }
 
-        // Icon sprites: don't auto-update (animation plays only on selection press)
+        // PixelatedIcon anims advance in super.update (before input / updateLockAnims)
+        foreach (var pi in _pixIcons.Values) pi.Update(dt);
+        UpdateLockSprites(dt);
 
         // Selector denied timer
         if (_selectorDenied)
@@ -743,7 +807,7 @@ public class CharacterSelectScene : Scene
             {
                 _pressedSelect = false;
                 _selectorConfirmed = false;
-                Audio.PlaySound("CS_select");
+                Audio.PlaySound("menus/character_select/scroll");
                 // Play deselect animation on player
                 if (_playerAnims.TryGetValue(_curChar, out var pa) &&
                     _playerSheets.TryGetValue(_curChar, out var pSheet))
@@ -843,27 +907,20 @@ public class CharacterSelectScene : Scene
 
         // Determine current character at cursor
         int selected = GetCurrentSelected();
-        if (_availableChars.TryGetValue(selected, out var charId))
+        if (TryPlayableSlot(selected, out var charId))
         {
             _onLockedSlot = false;
             if (charId != _curChar)
             {
                 _curChar = charId;
-                Audio.PlaySound("CS_select");
+                Audio.PlaySound("menus/character_select/scroll");
                 SwitchCharacterSprites(_curChar);
-                // Play icon animation once on character switch
-                if (_iconSprites.TryGetValue(charId, out var selIcon) &&
-                    _iconSheets.TryGetValue(charId, out var selSheet))
-                {
-                    var iconAnim = FindAnim(selSheet, "BF ICON", "PICO ICON", "idle", "icon");
-                    if (iconAnim != null) selIcon.PlayAnimation(iconAnim, true, false);
-                }
             }
 
             // Confirm selection
             if (Input.ConfirmPressed)
             {
-                Audio.PlaySound("CS_confirm");
+                Audio.PlaySound("menus/character_select/confirm");
                 _pressedSelect = true;
                 _selectorConfirmed = true;
                 _selectTimer = 1.5f;
@@ -873,7 +930,7 @@ public class CharacterSelectScene : Scene
                     if (ca != null) _confirmSelectorSprite.PlayAnimation(ca, true, false);
                 }
 
-                // Play confirm animation (non-looping — stays on last frame like original)
+                // Play confirm animation (non-looping � stays on last frame like original)
                 if (_playerAnims.TryGetValue(_curChar, out var pa) &&
                     _playerSheets.TryGetValue(_curChar, out var pSheet))
                 {
@@ -897,7 +954,7 @@ public class CharacterSelectScene : Scene
             // Locked slot - deny
             if (Input.ConfirmPressed)
             {
-                Audio.PlaySound("CS_locked");
+                Audio.PlaySound("menus/character_select/cancel"); LockedAccept();
                 _selectorDenied = true;
                 _selectorDeniedTimer = 0.5f; // Fallback for when denied sprite is unavailable
                 if (_deniedSelectorSprite != null)
@@ -1025,7 +1082,7 @@ public class CharacterSelectScene : Scene
                         var pixels = new Color[rt.Width * rt.Height];
                         rt.GetData(pixels);
                         regularTex = new Texture2D(Game.GraphicsDevice, rt.Width, rt.Height);
-                        regularTex.SetData(pixels);
+                        regularTex.SetData(pixels); CompositeCells.Copy(rt, regularTex);
                         converted[rt] = regularTex;
                     }
                     newFrames.Add((regularTex, rect, origin));
@@ -1068,7 +1125,7 @@ public class CharacterSelectScene : Scene
         int H = FNFGame.SCREEN_HEIGHT;
         float cx = _cameraX;
         float cy = _cameraY;
-        // Original FNF CharSelectSubState uses default camera zoom (1.0) — no zoom applied.
+        // Original FNF CharSelectSubState uses default camera zoom (1.0) � no zoom applied.
         // HaxeFlixel camera scroll: camFollow - screenCenter = (cx, cy).
         // Each sprite's draw position = spritePos - scroll * scrollFactor.
         float scrollX = cx;
@@ -1137,13 +1194,16 @@ public class CharacterSelectScene : Scene
 
         spriteBatch.End();
 
-        // === Character composites (per-part Matrix rendering — each part gets its own Begin/End) ===
+        // === Character composites (per-part Matrix rendering � each part gets its own Begin/End) ===
         // Bypasses broken pre-rendering pipeline, uses full affine transforms for pixel-perfect assembly.
 
+        if (!DrawUnlockPlayers(spriteBatch, scrollX, scrollY)) { // lockedChill / unlock (CharacterSelectScene.Unlock.cs)
         // 7. Spectator GF/Nene (original: position (0,0), scrollFactor 1)
         if (!_onLockedSlot)
         {
             var specOff = _spectatorOffsets.GetValueOrDefault(_curChar, Vector2.Zero);
+            // official v0.8.1 atlases (Store build) carry the Animate stage placement in AN.STI (applyStageMatrix)
+            if (_spectatorSheets.TryGetValue(_curChar, out var specSheetSO) && specSheetSO != null) specOff += specSheetSO.StageOffset;
             DrawCharacterComposite(spriteBatch, _spectatorAnims, _spectatorSheets, _curChar,
                 specOff.X - scrollX, specOff.Y - scrollY);
         }
@@ -1152,6 +1212,7 @@ public class CharacterSelectScene : Scene
         if (!_onLockedSlot)
         {
             var playerOff = _playerOffsets.GetValueOrDefault(_curChar, Vector2.Zero);
+            if (_playerSheets.TryGetValue(_curChar, out var playerSheetSO) && playerSheetSO != null) playerOff += playerSheetSO.StageOffset;
             DrawCharacterComposite(spriteBatch, _playerAnims, _playerSheets, _curChar,
                 playerOff.X - scrollX, playerOff.Y - scrollY);
         }
@@ -1171,6 +1232,7 @@ public class CharacterSelectScene : Scene
             spriteBatch.End();
         }
 
+        }
         // === AlphaBlend batch 2b: speakers ===
         spriteBatch.Begin(samplerState: SamplerState.PointClamp, blendState: BlendState.AlphaBlend, transformMatrix: _zoomMatrix);
 
@@ -1192,7 +1254,7 @@ public class CharacterSelectScene : Scene
         spriteBatch.End();
 
         // === HUD Normal batch: panel background (camHUD, no zoom) ===
-        // Original draw order: chooseDark → chooseDipshit → glow → icons → cursor → trails → nametag
+        // Original draw order: chooseDark ? chooseDipshit ? glow ? icons ? cursor ? trails ? nametag
         spriteBatch.Begin(samplerState: SamplerState.PointClamp, blendState: BlendState.NonPremultiplied);
 
         // 12. chooseDipshit platform (original: 426, -13, scrollFactor 0)
@@ -1216,7 +1278,7 @@ public class CharacterSelectScene : Scene
         // === HUD Normal batch: icons (camHUD, no zoom) ===
         spriteBatch.Begin(samplerState: SamplerState.PointClamp, blendState: BlendState.NonPremultiplied);
 
-        // 15. 3×3 Icon grid
+        // 15. 3�3 Icon grid
         DrawIconGrid(spriteBatch);
 
         spriteBatch.End();
@@ -1230,7 +1292,7 @@ public class CharacterSelectScene : Scene
         // 16. Selector main cursor (on top of icons, matching original add order)
         DrawSelectorMain(spriteBatch);
 
-        // 17. Nametag (original: midpoint 1008,100, scale 0.77, scrollFactor 0 — drawn last in HUD)
+        // 17. Nametag (original: midpoint 1008,100, scale 0.77, scrollFactor 0 � drawn last in HUD)
         DrawNametag(spriteBatch);
 
         // Fade overlay
@@ -1238,6 +1300,7 @@ public class CharacterSelectScene : Scene
             spriteBatch.Draw(Assets.Pixel, new Rectangle(0, 0, W, H), Color.Black * _fadeAlpha);
 
         spriteBatch.End();
+        DrawUnlockOverlay(spriteBatch);
 
         }
 
@@ -1324,24 +1387,18 @@ public class CharacterSelectScene : Scene
             float centerX = iconX + halfCellX;
             float centerY = iconY + halfCellY;
 
-            if (_availableChars.TryGetValue(i, out var charId))
+            if (TryPlayableSlot(i, out var charId))
             {
-                // Draw character icon at native size (original FNF: no scale normalization).
-                // BF icon is 104×88, Pico is 98×76 — fits naturally in 107×127 grid cells.
-                if (_iconSprites.TryGetValue(charId, out var iconSpr) && iconSpr.Sheet != null)
+                // PixelatedIcon (CharSelectSubState.initLocks + updateIconPositions + updateLockAnims):
+                // member.x = posX*grpXSpread + grpIcons.x, setGraphicSize(128,128)+updateHitbox -> offset = -0.5*(128-frameSize),
+                // origin = frameSize/2; scale 2 (2.6 + selectedBizz filters when selected); antialiasing false.
+                if (_pixIcons.TryGetValue(charId, out var pix) && pix.Sheet != null)
                 {
-                    // Update icon sprite only when animating (non-finished)
-                    if (!iconSpr.Finished)
-                        iconSpr.Update(1f / 60f);
-
-                    var frame = iconSpr.GetCurrentFrame();
-                    float fw = (frame?.FrameWidth > 0 ? frame.FrameWidth : frame?.SourceRect.Width) ?? 86;
-                    float fh = (frame?.FrameHeight > 0 ? frame.FrameHeight : frame?.SourceRect.Height) ?? 86;
+                    var fs = _pixIconFrameSize[charId];
                     bool isSelected = (i == GetCurrentSelected());
-                    float iconScale = isSelected ? 1.3f : 1.0f;
-                    iconSpr.Position = new Vector2(centerX - fw * iconScale / 2f, centerY - fh * iconScale / 2f);
-                    iconSpr.Scale = new Vector2(iconScale, iconScale);
-                    iconSpr.Draw(sb);
+                    float sc = (isSelected ? 2.6f : 2f) * IconScaleNorm(charId, fs);
+                    pix.Draw(sb, iconX, iconY, new Vector2(-0.5f * (128f - fs.X), -0.5f * (128f - fs.Y)), fs * 0.5f,
+                        new Vector2(sc, sc), Color.White, filtered: isSelected);
                 }
                 else
                 {
@@ -1352,10 +1409,14 @@ public class CharacterSelectScene : Scene
             }
             else
             {
-                // Locked slot — draw lock icon at native size with no tint (original: all green padlocks).
+                // Locked slot � draw lock icon at native size with no tint (original: all green padlocks).
                 bool isLockSelected = (i == GetCurrentSelected());
                 float selMult = isLockSelected ? 1.3f : 1.0f;
-                if (_lockedIconTex != null)
+                sb.End();
+                bool lockDrawn = DrawLock(sb, i, iconX, iconY);
+                sb.Begin(samplerState: SamplerState.PointClamp, blendState: BlendState.NonPremultiplied);
+                if (lockDrawn) { }
+                else if (_lockedIconTex != null)
                 {
                     float drawW = _lockedIconTex.Width * selMult;
                     float drawH = _lockedIconTex.Height * selMult;
@@ -1377,22 +1438,21 @@ public class CharacterSelectScene : Scene
     {
         if (_selectorTex == null || _selectorConfirmed) return;
 
-        // Original cursor has scrollFactor(0,0) on camHUD — follows icon group position during intro/exit
+        // Original cursor has scrollFactor(0,0) on camHUD � follows icon group position during intro/exit
         Vector2 lightPos = _cursorLightBlue;
         Vector2 darkPos = _cursorDarkBlue;
 
-        // Additive blend approximates SCREEN for cursor trails on dark backgrounds
-        spriteBatch.Begin(samplerState: SamplerState.PointClamp, blendState: BlendState.Additive);
-        // Dark blue trail (original: #3C74F7, SCREEN blend, decay 0.404)
-        spriteBatch.Draw(_selectorTex, darkPos, new Color(60, 116, 247) * (0.6f * _cursorAlpha));
-        // Light blue trail (original: #3EBBFF, SCREEN blend, decay 0.202)
-        spriteBatch.Draw(_selectorTex, lightPos, new Color(62, 187, 255) * (0.7f * _cursorAlpha));
+        // CharSelectCursors: darkBlue 0xFF3C74F7 / lightBlue 0xFF3EBBFF, blend SCREEN, group alpha (exit tween)
+        spriteBatch.Begin(samplerState: SamplerState.PointClamp, blendState: ScreenBlend);
+        float ca = _cursorAlpha;
+        spriteBatch.Draw(_selectorTex, darkPos, new Color(60 / 255f * ca, 116 / 255f * ca, 247 / 255f * ca, 1f));
+        spriteBatch.Draw(_selectorTex, lightPos, new Color(62 / 255f * ca, 187 / 255f * ca, 1f * ca, 1f));
         spriteBatch.End();
     }
 
     private void DrawSelectorMain(SpriteBatch sb)
     {
-        // Original cursor on camHUD — follows icon group position during intro/exit
+        // Original cursor on camHUD � follows icon group position during intro/exit
         Vector2 mainPos = _cursorMain;
 
         if (_selectorConfirmed)
@@ -1429,9 +1489,8 @@ public class CharacterSelectScene : Scene
         else
         {
             // Main cursor: yellow tint (original: FlxColor.interpolate(0xFFFF00, 0xFFCC00, pingPong(frame,8)/8))
-            int pp = _animFrame % 16;
-            float pulse = (pp < 8 ? pp : 16 - pp) / 8f;
-            var cursorColor = Color.Lerp(new Color(255, 255, 0), new Color(255, 204, 0), pulse) * _cursorAlpha;
+            float ph = _cursorColorTime / 0.2f % 2f; float pulse = ph < 1f ? ph : 2f - ph; // FlxTween.color 0.2 s PINGPONG
+            var cursorColor = new Color(new Color(255, (int)(255 + (204 - 255) * pulse), 0), _cursorAlpha);
             if (_selectorTex != null)
                 sb.Draw(_selectorTex, mainPos, cursorColor);
             else
@@ -1449,10 +1508,10 @@ public class CharacterSelectScene : Scene
     {
         // Show locked nametag based on grid position (original: nametag updates per-slot, not per-curChar)
         int sel = GetCurrentSelected();
-        string displayChar = _availableChars.ContainsKey(sel) ? _curChar : "locked";
+        string displayChar = !SlotShowsLock(sel) ? _curChar : "locked";
 
         // Detect character switch and trigger slide-in animation
-        // Original: nametag.x += nametag.width, alpha=0, tween x back + alpha 0→1, 0.4s expoOut
+        // Original: nametag.x += nametag.width, alpha=0, tween x back + alpha 0?1, 0.4s expoOut
         if (displayChar != _nametagLastChar && _nametagLastChar != "")
             _nametagSwitchTimer = 0.4f;
         _nametagLastChar = displayChar;
@@ -1480,6 +1539,15 @@ public class CharacterSelectScene : Scene
         else
         {
             // Fallback text at nametag position
+            // mod players without a nametag image: original bold alphabet (never the small plain font)
+            var bold = FNF_MonoGame.Engine.AtlasText.Bold;
+            if (bold != null && displayChar != "locked")
+            {
+                string nm = displayChar.ToUpperInvariant(); const float scl = 0.9f;
+                float w = bold.Width(nm, scl);
+                bold.Draw(sb, nm, 1008f - w / 2f + w * switchEase, 100f - bold.MaxHeight * scl / 2f + _nametagSlideY, switchAlpha, 0f, scl);
+                return;
+            }
             var font = Assets.GetFont(24);
             if (font != null)
             {
@@ -1498,6 +1566,23 @@ public class CharacterSelectScene : Scene
     /// Smooth interpolation matching original FNF's smoothLerpPrecision.
     /// target + (current - target) * exp(-dt / duration)
     /// </summary>
+    /// <summary>MathUtil.smoothLerpPrecision (precision 1/100).</summary>
+    private static float SmoothLerpPrecision(float b, float t, float dt, float duration)
+    {
+        if (dt == 0 || b == t) return b == t ? t : b;
+        float r = MathF.Pow(0.01f, dt / duration);
+        return t + (b - t) * r;
+    }
+    /// <summary>MathUtil.snap(value, snap, 1).</summary>
+    private static float SnapTo(float v, float snap) => MathF.Abs(v - snap) <= 1f ? snap : v;
+    private float _cursorColorTime;
+    private static readonly BlendState ScreenBlend = new BlendState
+    {
+        // openfl SCREEN: src + dst - src*dst (src = tinted texel * alpha)
+        ColorSourceBlend = Blend.SourceAlpha, ColorDestinationBlend = Blend.InverseSourceColor,
+        AlphaSourceBlend = Blend.Zero, AlphaDestinationBlend = Blend.One,
+    };
+
     private static float SmoothLerp(float current, float target, float dt, float duration)
     {
         return target + (current - target) * MathF.Exp(-dt / duration);
@@ -1585,3 +1670,4 @@ public class CharacterSelectScene : Scene
         }
     }
 }
+

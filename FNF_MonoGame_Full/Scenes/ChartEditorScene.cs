@@ -1,4 +1,4 @@
-ï»¿using Microsoft.Xna.Framework;
+using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using Microsoft.Xna.Framework.Input;
 using FNF_MonoGame.Engine;
@@ -10,7 +10,7 @@ using Newtonsoft.Json.Linq;
 namespace FNF_MonoGame.Scenes;
 
 /// <summary>
-/// Chart Editor â€” real editing tool for note charts.
+/// Chart Editor — real editing tool for note charts.
 ///
 /// Controls:
 ///   Left-click grid lane = place note at that time position
@@ -51,9 +51,9 @@ public class ChartEditorScene : Scene
     public override void Load()
     {
         string root = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Content", "songs");
-        if (System.IO.Directory.Exists(root))
+        if (global::FNF_MonoGame.Engine.FsCI.DirectoryExists(root))
         {
-            foreach (var dir in System.IO.Directory.GetDirectories(root))
+            foreach (var dir in global::FNF_MonoGame.Engine.FsCI.GetDirectories(root))
                 _songNames.Add(System.IO.Path.GetFileName(dir));
             _songNames.Sort(StringComparer.OrdinalIgnoreCase);
         }
@@ -77,10 +77,10 @@ public class ChartEditorScene : Scene
     private void SaveChart()
     {
         if (_chart == null || string.IsNullOrEmpty(_chartFilePath)) return;
-        if (!System.IO.File.Exists(_chartFilePath)) { EditorUI.ShowToast("No chart file found!"); return; }
+        if (!global::FNF_MonoGame.Engine.FsCI.FileExists(_chartFilePath)) { EditorUI.ShowToast("No chart file found!"); return; }
 
         // Read original JSON, update notes array
-        var json = JObject.Parse(System.IO.File.ReadAllText(_chartFilePath));
+        var json = JObject.Parse(global::FNF_MonoGame.Engine.FsCI.ReadAllText(_chartFilePath));
         string diff = _difficulties[_diffIndex];
 
         // Build notes array in FNF format
@@ -303,7 +303,7 @@ public class ChartEditorScene : Scene
         // Right panel
         DrawNoteProps(sb, px, font, fontSm, W, H);
 
-        string saveHint = _dirty ? "UNSAVED â€” Ctrl+S to save" : "Saved";
+        string saveHint = _dirty ? "UNSAVED — Ctrl+S to save" : "Saved";
         EditorUI.DrawStatusBar(sb, px, fontSm, W, H, saveHint, $"Zoom:{_zoom:F1}x",
             "LClick=place  RClick=delete  Scroll=nav  Ctrl+Scroll=zoom  Del=remove");
         EditorUI.DrawToast(sb, px, font, W, H);

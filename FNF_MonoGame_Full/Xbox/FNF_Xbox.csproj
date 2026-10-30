@@ -25,7 +25,7 @@
     <SkipValidatePackageReferences>true</SkipValidatePackageReferences>
     <_PackagingOutputsIncludesFramework>true</_PackagingOutputsIncludesFramework>
     <PlatformTarget>x64</PlatformTarget>
-    <PackageCertificateThumbprint>4CAC51A51E00A2284D67C5246DAECAD2787D5607</PackageCertificateThumbprint>
+    <PackageCertificateThumbprint>0CF8C36AC5F8A1D97017E9FB18CE21AFDD8176A3</PackageCertificateThumbprint>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)|$(Platform)' == 'Debug|x64'">
@@ -52,26 +52,109 @@
     <!-- Engine -->
     <Compile Include="..\Engine\AssetManager.cs" Link="Engine\AssetManager.cs" />
     <Compile Include="..\Engine\InputManager.cs" Link="Engine\InputManager.cs" />
+    <Compile Include="..\Engine\ButtonPrompts.cs" Link="Engine\ButtonPrompts.cs" />
+    <Compile Include="..\Engine\AtlasText.cs" Link="Engine\AtlasText.cs" />
+    <Compile Include="..\Engine\RoundCompat.cs" Link="Engine\RoundCompat.cs" />
+    <Compile Include="..\Engine\FsCI.cs" Link="Engine\FsCI.cs" />
+    <Compile Include="..\Engine\SystemKeyboard.cs" Link="Engine\SystemKeyboard.cs" />
+    <Compile Include="..\Engine\JsonCompat.cs" Link="Engine\JsonCompat.cs" />
+    <Compile Include="..\Engine\SfxPool.cs" Link="Engine\SfxPool.cs" />
+    <Compile Include="..\Engine\SpriteSheetTextureCache.cs" Link="Engine\SpriteSheetTextureCache.cs" />
+    <Compile Include="..\Engine\FpsCounter.cs" Link="Engine\FpsCounter.cs" />
     <Compile Include="..\Engine\HighscoreManager.cs" Link="Engine\HighscoreManager.cs" />
     <Compile Include="..\Engine\SceneManager.cs" Link="Engine\SceneManager.cs" />
+    <Compile Include="..\Engine\MemStats.cs" Link="Engine\MemStats.cs" />
+    <Compile Include="..\Engine\CompositeCells.cs" Link="Engine\CompositeCells.cs" />
+    <Compile Include="..\Engine\StickerTransition.cs" Link="Engine\StickerTransition.cs" />
+    <Compile Include="..\Engine\PixelatedIcon.cs" Link="Engine\PixelatedIcon.cs" />
+    <Compile Include="..\Engine\VideoCutscenePlayer.cs" Link="Engine\VideoCutscenePlayer.cs" />
+    <Compile Include="..\Engine\Multiplayer.cs" Link="Engine\Multiplayer.cs" />
+    <Compile Include="..\Engine\PsychOnline.cs" Link="Engine\PsychOnline.cs" />
+    <Compile Include="..\Engine\PsychOnline.Extras.cs" Link="Engine\PsychOnline.Extras.cs" />
+    <Compile Include="..\Engine\PsychOnline.Lobby.cs" Link="Engine\PsychOnline.Lobby.cs" />
+    <Compile Include="..\Engine\PsychOnline.RoomMods.cs" Link="Engine\PsychOnline.RoomMods.cs" />
+    <Compile Include="..\Engine\PsychOnline.Full.cs" Link="Engine\PsychOnline.Full.cs" />
+    <Compile Include="..\Scenes\ProUI.cs" Link="Scenes\ProUI.cs" />
+    <Compile Include="..\Scenes\FunkTheme.cs" Link="Scenes\FunkTheme.cs" />
+    <Compile Include="..\Scenes\PsoResultsScene.cs" Link="Scenes\PsoResultsScene.cs" />
+    <Compile Include="..\Scenes\PsychOnlineScene.Pro.cs" Link="Scenes\PsychOnlineScene.Pro.cs" />
+    <Compile Include="..\Scenes\PsychOnlineScene.Theme.cs" Link="Scenes\PsychOnlineScene.Theme.cs" />
+    <Compile Include="..\Scenes\ModBrowserScene.Pro.cs" Link="Scenes\ModBrowserScene.Pro.cs" />
+    <Compile Include="..\Engine\Colyseus\MsgPack.cs" Link="Engine\Colyseus\MsgPack.cs" />
+    <Compile Include="..\Engine\Colyseus\SchemaDecoder.cs" Link="Engine\Colyseus\SchemaDecoder.cs" />
+    <Compile Include="..\Engine\Colyseus\ColyseusRoom.cs" Link="Engine\Colyseus\ColyseusRoom.cs" />
     <Compile Include="..\Engine\SpriteSheet.cs" Link="Engine\SpriteSheet.cs" />
     <Compile Include="..\Engine\AlphabetFont.cs" Link="Engine\AlphabetFont.cs" />
+    <Compile Include="..\Engine\EditorUI.cs" Link="Engine\EditorUI.cs" />
     <!-- AudioManager.cs excluded — uses NAudio (Win32 only), replaced by XboxAudioManager.cs -->
     <!-- Gameplay -->
     <Compile Include="..\Gameplay\Chart.cs" Link="Gameplay\Chart.cs" />
+    <Compile Include="..\Gameplay\Character.Stubs.cs" Link="Gameplay\Character.Stubs.cs" />
     <Compile Include="..\Gameplay\Character.cs" Link="Gameplay\Character.cs" />
+    <Compile Include="..\Gameplay\Character.UpdateHitbox.cs" Link="Gameplay\Character.UpdateHitbox.cs" />
+    <Compile Include="..\Gameplay\Character.Trail.cs" Link="Gameplay\Character.Trail.cs" />
+    <Compile Include="..\Gameplay\Character.AtlasSettings.cs" Link="Gameplay\Character.AtlasSettings.cs" />
+    <Compile Include="..\Gameplay\Character.Combo.cs" Link="Gameplay\Character.Combo.cs" />
+    <Compile Include="..\Gameplay\Character.Memory.cs" Link="Gameplay\Character.Memory.cs" />
+    <Compile Include="..\Gameplay\Character.PsychApi.cs" Link="Gameplay\Character.PsychApi.cs" />
     <Compile Include="..\Gameplay\NoteField.cs" Link="Gameplay\NoteField.cs" />
     <Compile Include="..\Gameplay\Conductor.cs" Link="Gameplay\Conductor.cs" />
     <!-- Scenes -->
     <Compile Include="..\Scenes\PlayScene.cs" Link="Scenes\PlayScene.cs" />
     <Compile Include="..\Scenes\MainMenuScene.cs" Link="Scenes\MainMenuScene.cs" />
+    <Compile Include="..\Scenes\MultiplayerScene.cs" Link="Scenes\MultiplayerScene.cs" />
+    <Compile Include="..\Scenes\PsychOnlineScene.cs" Link="Scenes\PsychOnlineScene.cs" />
+    <Compile Include="..\Scenes\PsychOnlineScene.Lobby.cs" Link="Scenes\PsychOnlineScene.Lobby.cs" />
+    <Compile Include="..\Scenes\PsychOnlineScene.Mods.cs" Link="Scenes\PsychOnlineScene.Mods.cs" />
+    <Compile Include="..\Scenes\PsychOnlineScene.Funk.cs" Link="Scenes\PsychOnlineScene.Funk.cs" />
+    <Compile Include="..\Scenes\FunkMenu.cs" Link="Scenes\FunkMenu.cs" />
+    <Compile Include="..\Scenes\OptionsScene.Funk.cs" Link="Scenes\OptionsScene.Funk.cs" />
+    <Compile Include="..\Scenes\OptionsScene.Theme.cs" Link="Scenes\OptionsScene.Theme.cs" />
+    <Compile Include="..\Scenes\OptionsScene.ModOptions.cs" Link="Scenes\OptionsScene.ModOptions.cs" />
+    <Compile Include="..\Scenes\OptionsScene.PsychExtras.cs" Link="Scenes\OptionsScene.PsychExtras.cs" />
+    <Compile Include="..\Scenes\ModBrowserScene.cs" Link="Scenes\ModBrowserScene.cs" />
+    <Compile Include="..\Engine\GameBanana.cs" Link="Engine\GameBanana.cs" />
+    <Compile Include="..\Engine\PsychOnline.Skins.cs" Link="Engine\PsychOnline.Skins.cs" />
+    <Compile Include="..\Scenes\MultiplayerResultsScene.cs" Link="Scenes\MultiplayerResultsScene.cs" />
     <Compile Include="..\Scenes\TitleScene.cs" Link="Scenes\TitleScene.cs" />
+    <Compile Include="..\Scenes\StartupNoticeScene.cs" Link="Scenes\StartupNoticeScene.cs" />
+    <Compile Include="..\Scenes\TitleScene.Extras.cs" Link="Scenes\TitleScene.Extras.cs" />
+    <Compile Include="..\Scenes\AttractScene.cs" Link="Scenes\AttractScene.cs" />
     <Compile Include="..\Scenes\FreeplayScene.cs" Link="Scenes\FreeplayScene.cs" />
+    <Compile Include="..\Scenes\FreeplayScene.PicoConfirm.cs" Link="Scenes\FreeplayScene.PicoConfirm.cs" />
+    <Compile Include="..\Scenes\FreeplayScene.PicoCard.cs" Link="Scenes\FreeplayScene.PicoCard.cs" />
+    <Compile Include="..\Scenes\FreeplayScene.BfCard.cs" Link="Scenes\FreeplayScene.BfCard.cs" />
+    <Compile Include="..\Scenes\FreeplayScene.InstMenu.cs" Link="Scenes\FreeplayScene.InstMenu.cs" />
+    <Compile Include="..\Scenes\FreeplayScene.CharSelTransition.cs" Link="Scenes\FreeplayScene.CharSelTransition.cs" />
+    <Compile Include="..\Scenes\FreeplayScene.Album.cs" Link="Scenes\FreeplayScene.Album.cs" />
+    <Compile Include="..\Scenes\FreeplayScene.VSlice.cs" Link="Scenes\FreeplayScene.VSlice.cs" />
+    <Compile Include="..\Scenes\FreeplayScene.Players.cs" Link="Scenes\FreeplayScene.Players.cs" />
+    <Compile Include="..\Scenes\FreeplayScene.Ranks.cs" Link="Scenes\FreeplayScene.Ranks.cs" />
+    <Compile Include="..\Scenes\FreeplayScene.Parent.cs" Link="Scenes\FreeplayScene.Parent.cs" />
+    <Compile Include="..\Scenes\FreeplayScene.Exit.cs" Link="Scenes\FreeplayScene.Exit.cs" />
+    <Compile Include="..\Scenes\FreeplayScene.Stickers.cs" Link="Scenes\FreeplayScene.Stickers.cs" />
+    <Compile Include="..\Scenes\FreeplayScene.RankAnim.cs" Link="Scenes\FreeplayScene.RankAnim.cs" />
+    <Compile Include="..\Scenes\FreeplayScene.LetterSort.cs" Link="Scenes\FreeplayScene.LetterSort.cs" />
     <Compile Include="..\Scenes\StoryModeScene.cs" Link="Scenes\StoryModeScene.cs" />
+    <Compile Include="..\Scenes\StoryModeScene.Psych.cs" Link="Scenes\StoryModeScene.Psych.cs" />
     <Compile Include="..\Scenes\ResultsScene.cs" Link="Scenes\ResultsScene.cs" />
+    <Compile Include="..\Scenes\ResultsScene.Replay.cs" Link="Scenes\ResultsScene.Replay.cs" />
+    <Compile Include="..\Engine\Replays.cs" Link="Engine\Replays.cs" />
+    <Compile Include="..\Engine\CrashHandler.cs" Link="Engine\CrashHandler.cs" />
+    <Compile Include="..\Engine\UpdateCheck.cs" Link="Engine\UpdateCheck.cs" />
+    <Compile Include="..\Engine\PerfStats.cs" Link="Engine\PerfStats.cs" />
+    <Compile Include="..\Scenes\FreeplayScene.Nps.cs" Link="Scenes\FreeplayScene.Nps.cs" />
+    <Compile Include="..\Engine\PsychOnlineBoards.cs" Link="Engine\PsychOnlineBoards.cs" />
+    <Compile Include="..\Engine\QrCode.cs" Link="Engine\QrCode.cs" />
+    <Compile Include="..\Engine\ExternalDownloads.cs" Link="Engine\ExternalDownloads.cs" />
+    <Compile Include="..\Scenes\FreeplayScene.OnlineBoard.cs" Link="Scenes\FreeplayScene.OnlineBoard.cs" />
     <Compile Include="..\Scenes\OptionsScene.cs" Link="Scenes\OptionsScene.cs" />
+    <Compile Include="..\Scenes\OptionsScene.Calibration.cs" Link="Scenes\OptionsScene.Calibration.cs" />
     <Compile Include="..\Scenes\CharacterSelectScene.cs" Link="Scenes\CharacterSelectScene.cs" />
+    <Compile Include="..\Scenes\CharacterSelectScene.Lock.cs" Link="Scenes\CharacterSelectScene.Lock.cs" />
+    <Compile Include="..\Scenes\CharacterSelectScene.Players.cs" Link="Scenes\CharacterSelectScene.Players.cs" />
     <Compile Include="..\Scenes\CreditsScene.cs" Link="Scenes\CreditsScene.cs" />
+    <Compile Include="..\Scenes\Editors\*.cs" Link="Scenes\Editors\%(Filename)%(Extension)" />
     <!-- Xbox-specific -->
     <Compile Include="App.xaml.cs">
       <DependentUpon>App.xaml</DependentUpon>
@@ -82,9 +165,69 @@
     <Compile Include="XboxAudioManager.cs" />
     <Compile Include="XboxGame.cs" />
     <Compile Include="ContentDownloader.cs" />
+    <Compile Include="StoreContentInstaller.cs" />
+    <Compile Include="XboxDevHooks.cs" />
+    <Compile Include="UwpLog.cs" />
+    <Compile Include="XboxSystemKeyboard.cs" />
+    <Compile Include="..\Engine\AsyncLogWriter.cs" Link="Engine\AsyncLogWriter.cs" />
+    <Compile Include="UwpVideoPlayer.cs" />
     <Compile Include="LoadingScene.cs" />
     <Compile Include="GlobalUsings.cs" />
     <Compile Include="UwpPolyfills.cs" />
+    <!-- Psych Engine port (Xbox-compatible) -->
+    <Compile Include="..\Engine\PsychEngine\*.cs" Link="Engine\PsychEngine\%(Filename)%(Extension)" />
+    <Compile Include="..\Engine\PsychEngine\Objects\*.cs" Link="Engine\PsychEngine\Objects\%(Filename)%(Extension)" />
+    <Compile Include="..\Engine\PsychEngine\Cutscenes\*.cs" Link="Engine\PsychEngine\Cutscenes\%(Filename)%(Extension)" />
+    <Compile Include="..\Engine\PsychEngine\Stages\*.cs" Link="Engine\PsychEngine\Stages\%(Filename)%(Extension)" />
+    <Compile Include="..\Engine\PsychEngine\Stages\Objects\*.cs" Link="Engine\PsychEngine\Stages\Objects\%(Filename)%(Extension)" />
+    <Compile Include="..\Engine\PsychEngine\animation\*.cs" Link="Engine\PsychEngine\animation\%(Filename)%(Extension)" />
+    <Compile Include="..\Engine\PsychEngine\PsychLua\*.cs" Link="Engine\PsychEngine\PsychLua\%(Filename)%(Extension)" />
+    <Compile Include="..\Engine\PsychEngine\Options\*.cs" Link="Engine\PsychEngine\Options\%(Filename)%(Extension)" />
+    <Compile Include="..\Engine\PsychEngine\States\*.cs" Link="Engine\PsychEngine\States\%(Filename)%(Extension)" />
+    <Compile Include="..\Engine\PsychEngine\Editors\*.cs" Link="Engine\PsychEngine\Editors\%(Filename)%(Extension)" />
+    <Compile Include="..\Engine\PsychEngine\Editors\Content\*.cs" Link="Engine\PsychEngine\Editors\Content\%(Filename)%(Extension)" />
+    <Compile Include="..\Engine\PureHScript\*.cs" Link="Engine\PureHScript\%(Filename)%(Extension)" />
+    <Compile Include="..\Engine\PsychStageScriptParser.cs" Link="Engine\PsychStageScriptParser.cs" />
+    <!-- LuaScriptEngine is kept for legacy mod compatibility, but the main Psych Lua runtime is FunkinLua.cs -->
+    <Compile Include="..\Engine\LuaScriptEngine.cs" Link="Engine\LuaScriptEngine.cs" />
+    <Compile Include="..\Engine\ModManager.cs" Link="Engine\ModManager.cs" />
+    <Compile Include="..\Engine\VSliceMods.cs" Link="Engine\VSliceMods.cs" />
+    <Compile Include="..\Engine\PlayerRegistry.cs" Link="Engine\PlayerRegistry.cs" />
+    <Compile Include="..\Engine\Unlocks.cs" Link="Engine\Unlocks.cs" />
+    <Compile Include="..\Scenes\CharacterSelectScene.Unlock.cs" Link="Scenes\CharacterSelectScene.Unlock.cs" />
+    <Compile Include="..\Engine\VSliceScripts.cs" Link="Engine\VSliceScripts.cs" />
+    <Compile Include="..\Gameplay\CharacterJsonData.VSlice.cs" Link="Gameplay\CharacterJsonData.VSlice.cs" />
+    <!-- HaxeInterpreter and HaxePositionResolver are pure C# math/expression helpers and are Xbox-compatible. -->
+    <Compile Include="..\Engine\HaxeInterpreter.cs" Link="Engine\HaxeInterpreter.cs" />
+    <Compile Include="..\Engine\HaxePositionResolver.cs" Link="Engine\HaxePositionResolver.cs" />
+    <!-- HaxeScriptEngine, HaxeFlixelRuntime, and HaxeFlixelModBridge use the JIT-based HaxeScriptRuntime.dll
+         (extern alias HX) and hardcode Windows desktop paths. They are excluded from the Xbox build. -->
+    <!-- <Compile Include="..\Engine\HaxeScriptEngine.cs" Link="Engine\HaxeScriptEngine.cs" /> -->
+    <!-- <Compile Include="..\Engine\HaxeFlixelRuntime.cs" Link="Engine\HaxeFlixelRuntime.cs" /> -->
+    <!-- <Compile Include="..\Engine\HaxeFlixelModBridge.cs" Link="Engine\HaxeFlixelModBridge.cs" /> -->
+    <!-- VolumeOverlay and desktop-only DiscordRPCManager excluded. -->
+    <Compile Include="..\Gameplay\BaseStage.cs" Link="Gameplay\BaseStage.cs" />
+    <Compile Include="..\Gameplay\Girlfriend.cs" Link="Gameplay\Girlfriend.cs" />
+    <Compile Include="..\Gameplay\HScriptStage.cs" Link="Gameplay\HScriptStage.cs" />
+    <Compile Include="..\Gameplay\LuaStage.cs" Link="Gameplay\LuaStage.cs" />
+    <Compile Include="..\Gameplay\Nene.cs" Link="Gameplay\Nene.cs" />
+    <Compile Include="..\Gameplay\Otis.cs" Link="Gameplay\Otis.cs" />
+    <Compile Include="..\Gameplay\PicoSpeaker.cs" Link="Gameplay\PicoSpeaker.cs" />
+    <Compile Include="..\Scenes\PlayStateParams.cs" Link="Scenes\PlayStateParams.cs" />
+    <Compile Include="..\Scenes\PlayScene.*.cs" Link="Scenes\%(Filename)%(Extension)" />
+    <Compile Include="..\Scenes\CreditsData.cs" Link="Scenes\CreditsData.cs" />
+    <Compile Include="..\Scenes\ModsScene.cs" Link="Scenes\ModsScene.cs" />
+    <Compile Include="..\Scenes\SkinsScene.cs" Link="Scenes\SkinsScene.cs" />
+    <Compile Include="..\Engine\NoteStyles.cs" Link="Engine\NoteStyles.cs" />
+    <Compile Include="..\Engine\ControllerNoteSkin.cs" Link="Engine\ControllerNoteSkin.cs" />
+    <Compile Include="..\Engine\PreloaderScreen.cs" Link="Engine\PreloaderScreen.cs" />
+    <Compile Include="..\Scenes\PlayScene.NoteStylePopups.cs" Link="Scenes\PlayScene.NoteStylePopups.cs" />
+    <Compile Include="..\Scenes\PlayScene.PsychPopups.cs" Link="Scenes\PlayScene.PsychPopups.cs" />
+    <Compile Include="..\Scenes\PlayScene.PlayerHold.cs" Link="Scenes\PlayScene.PlayerHold.cs" />
+    <Compile Include="..\Scenes\MenuUI.cs" Link="Scenes\MenuUI.cs" />
+    <Compile Include="..\Scenes\ModernUI.cs" Link="Scenes\ModernUI.cs" />
+    <Compile Include="..\Scenes\FunkUI.cs" Link="Scenes\FunkUI.cs" />
+    <Compile Include="..\Scenes\AchievementsScene.cs" Link="Scenes\AchievementsScene.cs" />
   </ItemGroup>
 
   <ItemGroup>
@@ -112,16 +255,29 @@
   <!-- Store assets -->
   <ItemGroup>
     <Content Include="Assets\**\*" />
-    <Content Include="..\Content\fonts\DS-DIGIT.TTF" Link="Content\fonts\DS-DIGIT.TTF" />
-    <Content Include="..\Content\fonts\DS-DIGI.TTF" Link="Content\fonts\DS-DIGI.TTF" />
-    <Content Include="..\Content\fonts\DS-DIGIB.TTF" Link="Content\fonts\DS-DIGIB.TTF" />
-    <Content Include="..\Content\fonts\DS-DIGII.TTF" Link="Content\fonts\DS-DIGII.TTF" />
+    <Content Include="..\Content\fonts\DS-DIGIT.TTF" Link="Content\fonts\DS-DIGIT.TTF" Condition="'$(StoreBuild)' != 'true'" />
+    <Content Include="..\Content\fonts\DS-DIGI.TTF" Link="Content\fonts\DS-DIGI.TTF" Condition="'$(StoreBuild)' != 'true'" />
+    <Content Include="..\Content\fonts\DS-DIGIB.TTF" Link="Content\fonts\DS-DIGIB.TTF" Condition="'$(StoreBuild)' != 'true'" />
+    <Content Include="..\Content\fonts\DS-DIGII.TTF" Link="Content\fonts\DS-DIGII.TTF" Condition="'$(StoreBuild)' != 'true'" />
   </ItemGroup>
 
   <!-- Code signing certificate -->
+  <!-- .NET Native runtime directives. Must be Content (UWP template); as EmbeddedResource .NET Native
+       ignored it (ILT0027), stripping reflection metadata for Newtonsoft.Json/MoonSharp/HScriptIris. -->
+  <ItemGroup>
+    <Content Include="Properties\Default.rd.xml" />
+  </ItemGroup>
+
   <ItemGroup>
     <None Include="mohammad_aljafari.pfx" />
     <None Include="mohammad_aljafari.cer" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Psych Engine HScript runtime (hscript-iris compiled from Haxe to C#, netstandard2.0) -->
+    <ProjectReference Include="..\..\HScriptIris_CS\HScriptIris.csproj">
+      <Aliases>IRIS</Aliases>
+    </ProjectReference>
   </ItemGroup>
 
   <ItemGroup>
@@ -132,6 +288,9 @@
     <PackageReference Include="System.IO.Compression" Version="4.3.0" />
     <PackageReference Include="Microsoft.NETCore.UniversalWindowsPlatform" Version="6.2.14" />
     <PackageReference Include="Microsoft.NETCore.Portable.Compatibility" Version="1.0.1" />
+    <PackageReference Include="MoonSharp" Version="2.0.0" />
+    <PackageReference Include="SharpCompress" Version="0.32.2" />
+    <PackageReference Include="System.Text.Json" Version="8.0.5" />
   </ItemGroup>
 
 

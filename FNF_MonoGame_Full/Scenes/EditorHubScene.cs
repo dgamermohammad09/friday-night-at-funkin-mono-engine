@@ -13,6 +13,7 @@ public class EditorHubScene : Scene
         new() { Title = "Animation Editor",  Desc = "Browse spritesheets, preview animations, inspect frames", Icon = ">", IconColor = new Color(78,201,176) },
         new() { Title = "Chart Editor",      Desc = "View note charts, beat grid, song properties",           Icon = "#", IconColor = new Color(224,108,117) },
         new() { Title = "Stage Editor",      Desc = "Position stage props, characters, camera offsets",       Icon = "=", IconColor = new Color(229,192,123) },
+        new() { Title = "Position Editor",   Desc = "Edit stage prop & character positions with full sprites (= Stage Editor)",Icon = "+", IconColor = new Color(120,220,180) },
         new() { Title = "CharSelect Editor", Desc = "Tweak character select scene layout and positions",      Icon = "@", IconColor = new Color(74,123,204) },
         new() { Title = "Freeplay Editor",   Desc = "Adjust freeplay capsule layout, DJ, backgrounds",       Icon = "~", IconColor = new Color(198,120,221) },
         new() { Title = "StoryMode Editor",  Desc = "Edit week banner positions, prop layout, track list",    Icon = "S", IconColor = new Color(255,180,86) },
@@ -42,9 +43,10 @@ public class EditorHubScene : Scene
     {
         Scene t = _sel switch {
             0 => new AnimationEditorScene(), 1 => new ChartEditorScene(), 2 => new StageEditorScene(),
-            3 => new CharSelectEditorScene(), 4 => new FreeplayEditorScene(),
-            5 => new StoryModeEditorScene(), 6 => new OptionsEditorScene(),
-            7 => new CompositeDebugScene(),
+            3 => new StageEditorScene(),
+            4 => new CharSelectEditorScene(), 5 => new FreeplayEditorScene(),
+            6 => new StoryModeEditorScene(), 7 => new OptionsEditorScene(),
+            8 => new CompositeDebugScene(),
             _ => _returnScene ?? new MainMenuScene()
         };
         Game.Scenes.ChangeScene(t);

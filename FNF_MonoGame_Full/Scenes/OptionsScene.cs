@@ -1,34 +1,85 @@
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using FNF_MonoGame.Engine;
+using FNF_MonoGame.Engine.PsychEngine;
+using Keys = Microsoft.Xna.Framework.Input.Keys;
 
 namespace FNF_MonoGame.Scenes;
 
 /// <summary>
-/// Options scene � matches original FNF OptionsState with Preferences, Controls, Offsets.
+/// Options scene ? matches original FNF OptionsState with Preferences, Controls, Offsets.
 /// Uses checkerboard background and AlphabetFont for menu items.
 /// </summary>
-public class OptionsScene : Scene
+public partial class OptionsScene : Scene
 {
     // Main categories
-    private readonly string[] _categories = { "Preferences", "Controls", "Offset", "Save Data", "Back" };
+    private readonly string[] _categories = { "Preferences", "Controls", "Lag Adjustment", "Save Data Options", "Exit" };   // OptionsState item names
     private int _categoryIndex;
     private float _categoryScrollLerp;
     private float _alphabetBob; // global timer for selected-item character Y-bob
     private bool _inSubMenu;
 
-    // Preferences items (original FNF: PreferencesMenu + GameplayChangersSubState)
-    private readonly (string Name, string Description)[] _prefItems =
+    // Preferences page: data-driven list (original PreferencesMenu order/names + port settings that are wired up:
+    // Middlescroll, Ghost Tapping, Note Offset (PlayScene _globalOffset), Controller Vibration, PC display settings).
+    private enum PrefKind { Toggle, Percent, Number, Back, Choice, Action, Text }
+    private sealed class PrefItem
     {
-        ("Naughtyness", "When enabled, raunchy content (such as swearing, etc.) is displayed."),
-        ("Downscroll", "When enabled, notes move downwards toward the strumline at the bottom of the screen."),
-        ("Flashing Lights", "When disabled, flashing effects are dampened. Useful for people with photosensitive epilepsy."),
-        ("Camera Zoom", "When enabled, the camera bounces during songs."),
-        ("Pause on Unfocus", "When enabled, the game automatically pauses when losing focus."),
-        ("Music Volume", "Adjust background music volume."),
-        ("SFX Volume", "Adjust sound effects volume."),
-        ("Back", string.Empty)
-    };
+        public string Name, Desc; public PrefKind Kind; public bool PcOnly;
+        public Func<bool> GetB; public Action<bool> SetB;
+        public Func<float> GetF; public Action<float> SetF; public float Min, Max, Step, FastStep; public float[] Presets;
+        public Func<float, string> Fmt;
+        public string[] Choices; public Func<string> GetS; public Action<string> SetS; public Action Run;
+        public bool Psych;   // bound to ClientPrefs (psychsave.json)
+    }
+    private List<PrefItem> _prefItems;
+    private float _prefRepeat;
+    private float _prefChangeFlash;
+
+    private void BuildPrefs()
+    {
+        var d = HighscoreManager.Data;
+        PrefItem T(string n, string desc, Func<bool> g, Action<bool> st) => new PrefItem { Name = n, Desc = desc, Kind = PrefKind.Toggle, GetB = g, SetB = st };
+        _prefItems = new List<PrefItem>
+        {
+            T("Naughtyness", "When enabled, raunchy content (such as swearing, etc.) is displayed.", () => d.Naughtyness, v => d.Naughtyness = v),
+            T("Downscroll", "When enabled, notes move downwards toward the strumline at the bottom of the screen.", () => d.Downscroll, v => d.Downscroll = v),
+            T("Middlescroll", "When enabled, your strumline is centred on the screen.", () => d.Middlescroll, v => d.Middlescroll = v),
+            new PrefItem { Name = "Note Skin", Desc = "Arrows = the original look. Controller Buttons (+ 5 more Buttons styles) = your notes show the controller buttons (Xbox or PlayStation). Chip / Future (+ mod skins) = Psych Engine note skins. Preview them in Skins.",
+                Kind = PrefKind.Choice, Choices = NoteStyles.Available().ToArray(), GetS = () => NoteStyles.Current, SetS = v => NoteStyles.Set(v) },
+            new PrefItem { Name = "Button Icons", Desc = "Controller icons on notes, prompts and the controls menu. AUTO = PlayStation icons while a PlayStation controller is connected, Xbox icons otherwise.",
+                Kind = PrefKind.Choice, Choices = ControllerIcons.Choices, GetS = () => ControllerIcons.Setting, SetS = v => ControllerIcons.Setting = v },
+            T("Ghost Tapping", "When enabled, pressing a direction with no note to hit is not counted as a miss.", () => d.GhostTapping, v => d.GhostTapping = v),
+            T("Flashing Lights", "When disabled, flashing effects are dampened. Useful for people with photosensitive epilepsy.", () => d.FlashingLights, v => d.FlashingLights = v),
+            T("Camera Zooms", "When enabled, the camera bounces during songs.", () => d.CameraZoom, v => d.CameraZoom = v),
+            new PrefItem { Name = "Note Offset", Desc = "Shifts note timing to make up for audio/video latency (ms). Hold to change faster. Use LAG ADJUSTMENT to calibrate.",
+                Kind = PrefKind.Number, GetF = () => d.GlobalOffset, SetF = v => d.GlobalOffset = (int)v, Min = -500, Max = 500, Step = 1, FastStep = 5, Fmt = v => $"{(int)v} MS" },
+            T("Controller Vibration", "When enabled, the controller rumbles on menu confirms and missed notes.", () => d.ControllerVibration,
+                v => { d.ControllerVibration = v; if (v) Input.Rumble(0.5f, 0.25f); }),
+            T("FPS Counter", "When enabled, the framerate and memory usage are displayed in the top-left corner.", () => d.FPSCounter, v => d.FPSCounter = v),
+            T("Pause on Unfocus", "When enabled, the game automatically pauses when losing focus.", () => d.AutoPause, v => d.AutoPause = v),
+            new PrefItem { Name = "HUD Scale", Desc = "Size of the gameplay HUD (notes, health bar, score). Lower it if the HUD feels too big on a large screen.", Kind = PrefKind.Percent,
+                GetF = () => d.HudScale <= 0 ? 1f : d.HudScale, SetF = v => d.HudScale = v, Min = 0.75f, Max = 1f, Step = 0.05f, FastStep = 0.05f },
+            new PrefItem { Name = "Safe Area", Desc = "Keeps the HUD away from the screen edges, for TVs that cut off the border (overscan). The corners show the HUD area.", Kind = PrefKind.Percent,
+                GetF = () => d.SafeArea, SetF = v => d.SafeArea = v, Min = 0f, Max = 0.1f, Step = 0.01f, FastStep = 0.01f },
+            new PrefItem { Name = "Music Volume", Desc = "Volume of the menu music and the songs' instrumental/vocals.", Kind = PrefKind.Percent,
+                GetF = () => d.MusicVolume, SetF = v => { d.MusicVolume = v; Audio.MusicVolume = v; }, Min = 0, Max = 1, Step = 0.05f, FastStep = 0.05f },
+            new PrefItem { Name = "SFX Volume", Desc = "Volume of menu sounds and gameplay sound effects.", Kind = PrefKind.Percent,
+                GetF = () => d.SfxVolume, SetF = v => { d.SfxVolume = v; Audio.SfxVolume = v; Audio.PlaySound("scrollMenu"); }, Min = 0, Max = 1, Step = 0.05f, FastStep = 0.05f },
+            T("Cache Assets", "When enabled, textures stay loaded between menus and songs so they load much faster (uses more video memory).", () => d.AssetCache,
+                v => { d.AssetCache = v; if (!v) SpriteSheetTextureCache.Purge(); }),
+#if !XBOX_UWP
+            new PrefItem { Name = "Launch in Fullscreen", Desc = "When enabled, the game starts in fullscreen mode (F11 toggles it at any time).", Kind = PrefKind.Toggle, PcOnly = true,
+                GetB = () => d.LaunchFullscreen, SetB = v => { d.LaunchFullscreen = v; if (v != Game.IsFullscreenAny) Game.ToggleFullscreen(true); } },
+            new PrefItem { Name = "VSync", Desc = "When enabled, the game attempts to match the framerate with your monitor's refresh rate.", Kind = PrefKind.Toggle, PcOnly = true,
+                GetB = () => d.VSync, SetB = v => { d.VSync = v; Game.ApplyDisplaySettings(); } },
+            new PrefItem { Name = "Framerate", Desc = "The maximum framerate the game runs at. UNLIMITED renders as fast as possible (with VSync on: your monitor's refresh rate).", Kind = PrefKind.Number, PcOnly = true,
+                GetF = () => d.FramerateCap <= 0 ? 1000 : d.FramerateCap, SetF = v => { d.FramerateCap = v >= 1000 ? 0 : (int)v; Game.ApplyDisplaySettings(); },
+                Presets = new float[] { 60, 120, 144, 240, 1000 }, Fmt = v => v >= 1000 ? "UNLIMITED" : $"{(int)v} FPS" },
+#endif
+            new PrefItem { Name = "Back", Desc = "", Kind = PrefKind.Back },
+        };
+        if (InputManager.IsXboxFamily) _prefItems.RemoveAll(p => p.Name == "Button Icons");   // Xbox console: always Xbox icons
+    }
     private int _prefIndex;
     private float _prefScrollLerp;
 
@@ -37,8 +88,10 @@ public class OptionsScene : Scene
     private bool _inSaveData;
     private int _controlIndex;
     private readonly string[] _controlNames = {
-        "Left", "Down", "Up", "Right", "Accept", "Back", "Pause", "Back to Menu"
+        "Left", "Down", "Up", "Right", "Accept", "Back", "Pause", "Reset", "Default Keys", "Exit"
     };
+    private int _kbCol;   // keyboard tab: binding slot (0 = primary, 1 = alternate)
+    private float _bindSavedT = -9f;
     private bool _waitingForKey;
     private int _rebindTarget = -1; // index into NoteKeysAlt (0-3)
     private bool _controlOnTab; // true = tab bar focused, Left/Right switches tabs
@@ -75,14 +128,19 @@ public class OptionsScene : Scene
 
     public override void Load()
     {
+        Game.Discord?.SetOptionsState();
+
         // Load values from save data
         var data = HighscoreManager.Data;
 
         // Load background (same as main menu)
         _bgTex = Assets.LoadTexture("menus/main_menu/background.png");
+        BuildPrefs();
+        ClientPrefs.EnsureLoaded();
 
         // Load checkbox spritesheet for toggle options
-        _checkboxSheet = SpriteSheet.Load(Game, "menus/options/checkbox");
+        _checkboxSheet = SpriteSheet.Load(Game, "menus/options/checkboxThingie");   // original checkboxThingie atlas
+        _prefToggleTime = new float[_prefItems.Count];
 
         // Load controller button sprites (Kenney Input Prompts)
         string[] spriteNames = {
@@ -105,6 +163,8 @@ public class OptionsScene : Scene
     public override void Unload()
     {
         _checkboxSheet?.Dispose();
+        _calNotes?.Dispose(); _calReceptors?.Dispose();
+        Input.GameplayMode = false;
         HighscoreManager.SavePreferences();
     }
 
@@ -117,7 +177,17 @@ public class OptionsScene : Scene
         _selFlash += dt * 6f;
         _alphabetBob += dt;
         _categoryScrollLerp += (_categoryIndex - _categoryScrollLerp) * Math.Min(1f, dt * 14f);
+        _catCam.Update(100f + 100f * _categoryIndex, 70f, dt);          // camFocusPoint.y = selected.y
+        _prefCam.Update(120f * _prefIndex + 30f, 70f, dt);
 
+        if (_inControls)
+        {
+            // controls page: the glyph of every pad button you press is drawn pushed in for a moment (cells + panel)
+            var flashBtn = Input.GetAnyButtonPressed();
+            if (flashBtn.HasValue) ControllerIcons.Flash(flashBtn.Value);
+            else if (ControllerIcons.SinceFlash < 30f && Input.IsGamePadHeld(ControllerIcons.LastFlash)) ControllerIcons.Hold();   // stays pushed in while held
+        }
+        if (!_inOffset && ThemedPageInput()) return;   // LB/RB (Q/E) + tab clicks switch pages
         if (_inControls)
         {
             UpdateControls();
@@ -125,7 +195,7 @@ public class OptionsScene : Scene
         }
         if (_inOffset)
         {
-            UpdateOffset(dt);
+            UpdateCalibration(dt);
             return;
         }
         if (_inSaveData)
@@ -135,9 +205,15 @@ public class OptionsScene : Scene
         }
         if (_inSubMenu)
         {
+            if (_editing) { UpdateEditor(); return; }
             UpdatePreferences(dt);
             return;
         }
+        UpdateCategories();
+    }
+
+    private void UpdateCategoriesOld()
+    {
 
         // Main category navigation
         if (Input.UpPressed)
@@ -158,11 +234,10 @@ public class OptionsScene : Scene
                 case 0: _inSubMenu = true; _prefIndex = 0; break;
                 case 1: _inControls = true; _controlIndex = 0; break;
                 case 2:
-                    _inOffset = true;
-                    _pendingOffsetsMusic = true;
+                    EnterCalibration();
                     break;
                 case 3:
-                    _inSaveData = true;
+                    _inSaveData = true; _prefIndex = 0;
                     break;
                 case 4:
                     Game.Scenes.ChangeScene(new MainMenuScene());
@@ -178,52 +253,72 @@ public class OptionsScene : Scene
 
     private void UpdatePreferences(float dt)
     {
-        var data = HighscoreManager.Data;
-        _prefScrollLerp += (_prefIndex - _prefScrollLerp) * 10f * dt;
+        _prefScrollLerp = MenuUI.Lerp(_prefScrollLerp, _prefIndex, 0.16f, dt);
+        _prefChangeFlash = Math.Max(0, _prefChangeFlash - dt * 4f);
+        int n = _prefItems.Count;
+        if (Input.UpPressed) { _prefIndex = (_prefIndex - 1 + n) % n; Audio.PlaySound("scrollMenu", 0.4f); }
+        if (Input.DownPressed) { _prefIndex = (_prefIndex + 1) % n; Audio.PlaySound("scrollMenu", 0.4f); }
+        if (Input.ScrollDelta != 0) { _prefIndex = Math.Clamp(_prefIndex + (Input.ScrollDelta > 0 ? -1 : 1), 0, n - 1); Audio.PlaySound("scrollMenu", 0.4f); }
 
-        if (Input.UpPressed)
-        {
-            _prefIndex = (_prefIndex - 1 + _prefItems.Length) % _prefItems.Length;
-            Audio.PlaySound("scrollMenu");
-        }
-        if (Input.DownPressed)
-        {
-            _prefIndex = (_prefIndex + 1) % _prefItems.Length;
-            Audio.PlaySound("scrollMenu");
-        }
-
-        float step = 0.05f;
+        PrefMouse(out bool mclick);
+        var it = _prefItems[_prefIndex];
         bool changed = false;
-
-        // Toggle or adjust
-        if (Input.ConfirmPressed || Input.LeftPressed || Input.RightPressed)
+        bool confirm = Input.ConfirmPressed || mclick;
+        int dir = Input.LeftPressed ? -1 : Input.RightPressed ? 1 : 0;
+        if (mclick && (it.Kind == PrefKind.Number || it.Kind == PrefKind.Percent || it.Kind == PrefKind.Choice)) dir = 1;
+        if (dir == 0 && Input.ConfirmPressed && it.Kind == PrefKind.Choice) dir = 1;   // A cycles a choice too (controller-first)
+        // hold-to-repeat for number/percent items (0.4 s delay, then every 0.05 s)
+        if (dir == 0 && (Input.LeftHeld || Input.RightHeld) && (it.Kind == PrefKind.Number || it.Kind == PrefKind.Percent))
         {
-            switch (_prefIndex)
-            {
-                case 0: data.Naughtyness = !data.Naughtyness; changed = true; break;
-                case 1: data.Downscroll = !data.Downscroll; changed = true; break;
-                case 2: data.FlashingLights = !data.FlashingLights; changed = true; break;
-                case 3: data.CameraZoom = !data.CameraZoom; changed = true; break;
-                case 4: data.AutoPause = !data.AutoPause; changed = true; break;
-                case 5: // Music Volume
-                    if (Input.LeftPressed) data.MusicVolume = Math.Max(0, data.MusicVolume - step);
-                    if (Input.RightPressed) data.MusicVolume = Math.Min(1, data.MusicVolume + step);
-                    Audio.MusicVolume = data.MusicVolume;
-                    changed = true;
-                    break;
-                case 6: // SFX Volume
-                    if (Input.LeftPressed) data.SfxVolume = Math.Max(0, data.SfxVolume - step);
-                    if (Input.RightPressed) data.SfxVolume = Math.Min(1, data.SfxVolume + step);
-                    Audio.SfxVolume = data.SfxVolume;
-                    if (Input.LeftPressed || Input.RightPressed) Audio.PlaySound("scrollMenu");
-                    changed = true;
-                    break;
-                case 7: // Back
-                    if (Input.ConfirmPressed) { _inSubMenu = false; Audio.PlaySound("cancelMenu"); }
-                    break;
-            }
-            if (changed) HighscoreManager.SavePreferences();
+            _prefRepeat += dt;
+            if (_prefRepeat > 0.4f) { _prefRepeat -= 0.05f; dir = Input.LeftHeld ? -1 : 1; }
         }
+        else if (dir != 0) _prefRepeat = 0f;
+        if (!Input.LeftHeld && !Input.RightHeld) _prefRepeat = 0f;
+
+        switch (it.Kind)
+        {
+            case PrefKind.Toggle:
+                if (confirm || dir != 0) { it.SetB(!it.GetB()); _fm.NotifyToggled(_prefIndex); changed = true; Audio.PlaySound("scrollMenu"); if (_prefToggleTime != null) _prefToggleTime[_prefIndex] = _alphabetBob; }
+                break;
+            case PrefKind.Percent:
+            case PrefKind.Number:
+                if (dir != 0)
+                {
+                    float v = it.GetF(), nv;
+                    if (it.Presets != null)
+                    {
+                        int idx = System.Array.FindIndex(it.Presets, p => p >= v - 0.01f);
+                        if (idx < 0) idx = it.Presets.Length - 1;
+                        if (dir < 0 && it.Presets[idx] >= v - 0.01f) idx--; else if (dir > 0 && it.Presets[idx] <= v + 0.01f) idx++;
+                        nv = it.Presets[Math.Clamp(idx, 0, it.Presets.Length - 1)];
+                    }
+                    else
+                    {
+                        float step = _prefRepeat > 1.2f ? it.FastStep : it.Step;
+                        nv = Math.Clamp((float)Math.Round((v + dir * step) / it.Step) * it.Step, it.Min, it.Max);
+                    }
+                    if (Math.Abs(nv - v) > 0.0001f) { it.SetF(nv); changed = true; if (it.Kind == PrefKind.Number) Audio.PlaySound("scrollMenu", 0.3f); }
+                }
+                break;
+            case PrefKind.Choice:
+                if (dir != 0 && it.Choices != null && it.Choices.Length > 0)
+                {
+                    int ci = Math.Max(0, System.Array.IndexOf(it.Choices, it.GetS()));
+                    it.SetS(it.Choices[(ci + dir + it.Choices.Length) % it.Choices.Length]); changed = true; Audio.PlaySound("scrollMenu");
+                }
+                break;
+            case PrefKind.Action:
+                if (confirm) { Audio.PlaySound("confirmMenu"); it.Run?.Invoke(); }
+                break;
+            case PrefKind.Text:
+                if (confirm) { Audio.PlaySound("confirmMenu"); var t = it; OpenEditor(it.Name + ":", it.Desc, it.GetS?.Invoke() == "DEFAULT" ? "" : it.GetS?.Invoke(), v => t.SetS?.Invoke(v)); }
+                break;
+            case PrefKind.Back:
+                if (confirm) { _inSubMenu = false; Audio.PlaySound("cancelMenu"); }
+                break;
+        }
+        if (changed) { _prefChangeFlash = 1f; HighscoreManager.SavePreferences(); if (it.Psych) ClientPrefs.Save(); }
 
         if (Input.BackPressed)
         {
@@ -243,11 +338,12 @@ public class OptionsScene : Scene
                 return;
             }
             var key = Input.GetAnyKeyPressed();
-            if (key.HasValue && _rebindTarget >= 0 && _rebindTarget < 4)
+            if (key.HasValue && _rebindTarget >= 0 && _rebindTarget < 8)
             {
-                Input.NoteKeysAlt[_rebindTarget] = key.Value;
+                AssignKey(_rebindTarget, _kbCol, key.Value);
                 Input.SaveBindings();
                 Audio.PlaySound("confirmMenu");
+                _bindSavedT = _alphabetBob;
                 _waitingForKey = false;
             }
             return;
@@ -266,6 +362,10 @@ public class OptionsScene : Scene
             {
                 if (_gpBindIndex >= 0 && _gpBindIndex < 4)
                 {
+                    // the button already drives another lane: give that lane this slot's old button (swap)
+                    var slots = new[] { Input.NoteButtons, Input.NoteFaceButtons, Input.NoteTriggerButtons };
+                    var old = slots[_gpBindCol][_gpBindIndex];
+                    foreach (var arr in slots) for (int l = 0; l < 4; l++) if (arr[l] == btn.Value && !(arr == slots[_gpBindCol] && l == _gpBindIndex)) arr[l] = old;
                     switch (_gpBindCol)
                     {
                         case 0: Input.NoteButtons[_gpBindIndex] = btn.Value; break;
@@ -291,6 +391,7 @@ public class OptionsScene : Scene
                 }
                 Input.SaveBindings();
                 Audio.PlaySound("confirmMenu");
+                _bindSavedT = _alphabetBob;
                 _waitingForButton = false;
             }
             return;
@@ -343,12 +444,6 @@ public class OptionsScene : Scene
             // Keyboard bindings tab
             if (Input.UpPressed)
             {
-                if (_controlIndex == 0)
-                {
-                    _controlOnTab = true;
-                    Audio.PlaySound("scrollMenu");
-                    return;
-                }
                 _controlIndex = (_controlIndex - 1 + _controlNames.Length) % _controlNames.Length;
                 Audio.PlaySound("scrollMenu");
             }
@@ -357,11 +452,22 @@ public class OptionsScene : Scene
                 _controlIndex = (_controlIndex + 1) % _controlNames.Length;
                 Audio.PlaySound("scrollMenu");
             }
-            if (Input.ConfirmPressed && _controlIndex < 4)
+            if ((Input.LeftPressed || Input.RightPressed) && _controlIndex < 8)
+            {
+                _kbCol = 1 - _kbCol;
+                Audio.PlaySound("scrollMenu");
+            }
+            if (Input.ConfirmPressed && _controlIndex < 8)
             {
                 _waitingForKey = true;
                 _rebindTarget = _controlIndex;
                 Audio.PlaySound("scrollMenu");
+                return;
+            }
+            if (Input.ConfirmPressed && _controlIndex == 8)
+            {
+                Input.ResetKeyboardBindings(); Input.SaveBindings();
+                Audio.PlaySound("confirmMenu"); _bindSavedT = _alphabetBob;
                 return;
             }
             if (Input.BackPressed || (Input.ConfirmPressed && _controlIndex == _controlNames.Length - 1))
@@ -372,16 +478,10 @@ public class OptionsScene : Scene
         }
         else
         {
-            // Controller bindings tab (4 notes + confirm + cancel + pause + switch-char + back = 9 rows)
-            int totalRows = 9;
+            // Controller bindings tab (4 notes + confirm + cancel + pause + switch-char + defaults + back = 10 rows)
+            int totalRows = 10;
             if (Input.UpPressed)
             {
-                if (_gpBindIndex == 0)
-                {
-                    _controlOnTab = true;
-                    Audio.PlaySound("scrollMenu");
-                    return;
-                }
                 _gpBindIndex = (_gpBindIndex - 1 + totalRows) % totalRows;
                 Audio.PlaySound("scrollMenu");
             }
@@ -406,7 +506,13 @@ public class OptionsScene : Scene
                 Audio.PlaySound("scrollMenu");
                 return;
             }
-            if (Input.BackPressed || (Input.ConfirmPressed && _gpBindIndex == 8))
+            if (Input.ConfirmPressed && _gpBindIndex == 8)
+            {
+                Input.ResetControllerBindings(); Input.SaveBindings();
+                Audio.PlaySound("confirmMenu"); _bindSavedT = _alphabetBob;
+                return;
+            }
+            if (Input.BackPressed || (Input.ConfirmPressed && _gpBindIndex == 9))
             {
                 _inControls = false;
                 Audio.PlaySound("cancelMenu");
@@ -417,7 +523,7 @@ public class OptionsScene : Scene
     private void UpdateOffset(float dt)
     {
         var data = HighscoreManager.Data;
-        // Shift+Left/Right for �5ms jumps, plain Left/Right for �1ms
+        // Shift+Left/Right for ?5ms jumps, plain Left/Right for ?1ms
         bool shiftHeld = Input.IsHeld(Microsoft.Xna.Framework.Input.Keys.LeftShift) ||
                          Input.IsHeld(Microsoft.Xna.Framework.Input.Keys.RightShift);
         if (Input.LeftPressed)
@@ -452,45 +558,17 @@ public class OptionsScene : Scene
 
     public override void Draw(SpriteBatch spriteBatch)
     {
-        spriteBatch.Begin(samplerState: SamplerState.PointClamp, blendState: BlendState.NonPremultiplied);
+        if (_inOffset) DrawCalibrationFunk(spriteBatch); else DrawFunk(spriteBatch);
+        return;
+        spriteBatch.Begin(samplerState: SamplerState.LinearClamp, blendState: BlendState.NonPremultiplied);
 
-        // Background (original: menuBG same as main menu)
-        if (_bgTex != null && _bgTex != Assets.Pixel)
-        {
-            spriteBatch.Draw(_bgTex,
-                new Rectangle(0, 0, FNFGame.SCREEN_WIDTH, FNFGame.SCREEN_HEIGHT),
-                Color.White);
-            // Dark overlay for readability
-            spriteBatch.Draw(Assets.Pixel,
-                new Rectangle(0, 0, FNFGame.SCREEN_WIDTH, FNFGame.SCREEN_HEIGHT),
-                Color.Black * 0.5f);
-        }
-        else
-        {
-            DrawCheckerboard(spriteBatch);
-            spriteBatch.Draw(Assets.Pixel,
-                new Rectangle(0, 0, FNFGame.SCREEN_WIDTH, FNFGame.SCREEN_HEIGHT),
-                Color.Black * 0.4f);
-        }
-
-        // Title
-        var alphabetFont = AlphabetFont.Bold;
-        if (alphabetFont != null)
-            alphabetFont.DrawStringCentered(spriteBatch, "OPTIONS", 30, Color.White, 0.7f);
-        else
-        {
-            var tf = Assets.GetFont(42);
-            if (tf != null)
-            {
-                var ts = tf.MeasureString("OPTIONS");
-                tf.DrawText(spriteBatch, "OPTIONS", new Vector2((FNFGame.SCREEN_WIDTH - ts.X) / 2, 40), Color.White);
-            }
-        }
+        // Background: OptionsState menuBG + HSVShader(-0.6, 0.9, 3.6), setGraphicSize(FlxG.width * 1.1) + screenCenter, scrollFactor 0
+        MenuUI.DrawOptionsBackground(spriteBatch);
 
         if (_inControls)
             DrawControlsMenu(spriteBatch);
         else if (_inOffset)
-            DrawOffsetMenu(spriteBatch);
+            DrawCalibration(spriteBatch);
         else if (_inSaveData)
             DrawSaveDataMenu(spriteBatch);
         else if (_inSubMenu)
@@ -498,212 +576,139 @@ public class OptionsScene : Scene
         else
             DrawCategoryMenu(spriteBatch);
 
-        // Hint bar
-        spriteBatch.Draw(Assets.Pixel,
-            new Rectangle(0, FNFGame.SCREEN_HEIGHT - 30, FNFGame.SCREEN_WIDTH, 30),
-            new Color(0, 0, 0, 220));
-        var hf = Assets.GetFont(14);
-        if (hf != null)
-        {
-            string hint;
-            if (_inControls)
-            {
-                if (_controlOnTab)
-                    hint = "LEFT/RIGHT: Switch Tab   DOWN/ENTER: Select Tab   ESC: Back";
-                else if (_controlTab == 1)
-                    hint = "UP/DOWN: Select   LEFT/RIGHT: Slot   ENTER: Rebind   LB/RB: Tab   ESC: Back";
-                else
-                    hint = "UP/DOWN: Select   ENTER: Rebind   LB/RB or Q/E: Tab   ESC: Back";
-            }
-            else if (_inSaveData)
-                hint = "UP/DOWN: Navigate   ENTER: Select   ESC: Back";
-            else
-                hint = "UP/DOWN: Navigate   LEFT/RIGHT: Adjust   ENTER: Select   ESC: Back";
-            hf.DrawText(spriteBatch, hint, new Vector2(20, FNFGame.SCREEN_HEIGHT - 22), Color.Gray);
-        }
+        // Button prompts (controller glyphs or keyboard keys, switching on the last used device)
+        ButtonPrompts.DrawBar(spriteBatch, Assets, Input, CurrentPrompts(), FNFGame.SCREEN_WIDTH / 2, FNFGame.SCREEN_HEIGHT - 46, 0.5f, 32);
 
         spriteBatch.End();
     }
 
-    private void DrawCategoryMenu(SpriteBatch sb)
+    private List<ButtonPrompts.Prompt> CurrentPrompts()
     {
-        // Original FNF MenuTypedList: list scrolls so the selected item is fixed near 1/3 height,
-        // selected item is full-size bold with a per-character Y-bob, others are smaller and dimmed.
-        var alphabetFont = AlphabetFont.Bold;
-        const float anchorY = 260f;     // y position the selected item rests at
-        const float spacing = 130f;     // distance between consecutive items at full size
-        const float selScale = 1.0f;
-        const float unselScale = 0.6f;
-
-        for (int i = 0; i < _categories.Length; i++)
+        var l = new List<ButtonPrompts.Prompt>();
+        if (_inControls)
         {
-            bool sel = i == _categoryIndex;
-            float dist = i - _categoryScrollLerp;
-            // Smoothly interpolate scale based on distance from the active selection.
-            float scale = MathHelper.Lerp(selScale, unselScale, MathHelper.Clamp(MathF.Abs(dist), 0f, 1f));
-            float y = anchorY + dist * spacing;
-            if (y < -spacing || y > FNFGame.SCREEN_HEIGHT + spacing) continue;
-
-            string text = _categories[i].ToUpper();
-
-            if (alphabetFont != null)
-            {
-                Color color = sel
-                    ? Color.White
-                    : Color.White * (0.55f + 0.15f * (1f - MathF.Min(MathF.Abs(dist), 1f)));
-                // Slight horizontal nudge for the selected item (matches the original "peek out" feel).
-                float xOffset = sel ? 20f : 0f;
-                float width = alphabetFont.MeasureWidth(text, scale);
-                float x = (FNFGame.SCREEN_WIDTH - width) / 2f + xOffset;
-                alphabetFont.DrawString(sb, text, new Vector2(x, y), color, scale, sel, _alphabetBob);
-            }
+            if (_controlOnTab) { l.Add(ButtonPrompts.LeftRight("TAB")); l.Add(ButtonPrompts.Confirm("OPEN")); }
             else
             {
-                // Fallback if alphabet atlas failed to load
-                var font = Assets.GetFont(sel ? 38 : 24);
-                if (font == null) continue;
-                var sz = font.MeasureString(text);
-                Color color = sel ? Color.White : Color.White * 0.55f;
-                font.DrawText(sb, text, new Vector2((FNFGame.SCREEN_WIDTH - sz.X) / 2, y), color);
+                l.Add(ButtonPrompts.UpDown("SELECT"));
+                l.Add(ButtonPrompts.LeftRight("SLOT"));
+                l.Add(ButtonPrompts.Confirm("REBIND"));
+                l.Add(new ButtonPrompts.Prompt(Microsoft.Xna.Framework.Input.Buttons.LeftShoulder, "Q", ""));
+                l.Add(new ButtonPrompts.Prompt(Microsoft.Xna.Framework.Input.Buttons.RightShoulder, "E", "TAB"));
             }
         }
+        else if (_inSubMenu)
+        {
+            l.Add(ButtonPrompts.UpDown("SELECT"));
+            var it = _prefItems[_prefIndex];
+            if (it.Kind == PrefKind.Toggle) l.Add(ButtonPrompts.Confirm("TOGGLE"));
+            else if (it.Kind == PrefKind.Back) l.Add(ButtonPrompts.Confirm("SELECT"));
+            else l.Add(ButtonPrompts.LeftRight("ADJUST"));
+        }
+        else if (_inOffset) { AddCalibrationPrompts(l); l.Add(new ButtonPrompts.Prompt(Microsoft.Xna.Framework.Input.Buttons.Back, "ESC", "BACK")); return l; }
+        else { l.Add(ButtonPrompts.UpDown("SELECT")); l.Add(ButtonPrompts.Confirm("SELECT")); }
+        l.Add(ButtonPrompts.Back("BACK"));
+        return l;
+    }
+
+    // OptionsMenu camera: follow(camFocusPoint 140x70, lerp 0.085), deadzone (0, 75, w, h - 150 + 40), minScrollY -75.
+    private readonly MenuUI.FollowCam _catCam = new MenuUI.FollowCam(75f, 720f - 150f + 40f, -75f, 0.085f);
+    // PreferencesMenu camera: margin 160 -> deadzone (0, 160, w, h - 320), minScrollY 0, lerp 0.085.
+    private readonly MenuUI.FollowCam _prefCam = new MenuUI.FollowCam(160f, 720f - 320f, 0f, 0.085f);
+    private float[] _prefToggleTime;
+
+    private void DrawCategoryMenu(SpriteBatch sb)
+    {
+        // OptionsMenu.createItem: TextMenuItem(0, 100 + i * 100, name, BOLD).screenCenter(X); idle alpha 0.6, selected 1.
+        var names = new List<string>();
+        foreach (var c in _categories) names.Add(c.ToUpperInvariant());
+        MenuUI.DrawTextMenu(sb, names, _categoryIndex, 100f, 100f, _catCam.ScrollY, _alphabetBob);
     }
 
     private void DrawPreferencesMenu(SpriteBatch sb)
     {
-        // Original FNF PreferencesMenu uses AtlasMenuItem (alphabet font) rows that scroll
-        // so the selected row is anchored near 1/3 of the screen and others scale down.
-        var data = HighscoreManager.Data;
-        var alphabetFont = AlphabetFont.Bold;
-        const float anchorY = 260f;
-        const float spacing = 110f;
-        const float selScale = 0.85f;
-        const float unselScale = 0.55f;
-        int W = FNFGame.SCREEN_WIDTH;
-
-        for (int i = 0; i < _prefItems.Length; i++)
+        // PreferencesMenu: checkbox at (0, 120 i) scale 0.7, label BOLD at y = 120 i + 30, x = 150 selected / 120 idle
+        // (+ lefthand value width - 75 for number items, value in DEFAULT font at x 15), description box on the HUD camera.
+        var bold = AtlasText.Bold; var def = AtlasText.Default;
+        float sy = _prefCam.ScrollY;
+        for (int i = 0; i < _prefItems.Count; i++)
         {
+            var it = _prefItems[i];
             bool sel = i == _prefIndex;
-            float dist = i - _prefScrollLerp;
-            float scale = MathHelper.Lerp(selScale, unselScale, MathHelper.Clamp(MathF.Abs(dist), 0f, 1f));
-            float y = anchorY + dist * spacing;
-            // Hide rows that would collide with the description popup at the bottom of the screen.
-            if (y < -spacing || y > FNFGame.SCREEN_HEIGHT - 180) continue;
-
-            string label = _prefItems[i].Name.ToUpper();
-            bool isToggle = i <= 4;
-            bool isVolume = i == 5 || i == 6;
-            bool toggleValue = i switch
+            float y = 120f * i + 30f - sy;
+            if (y < -150 || y > 760) continue;
+            float alpha = sel ? 1f : 0.6f;
+            float labelX = sel ? 150f : 120f;
+            switch (it.Kind)
             {
-                0 => data.Naughtyness,
-                1 => data.Downscroll,
-                2 => data.FlashingLights,
-                3 => data.CameraZoom,
-                4 => data.AutoPause,
-                _ => false
-            };
-
-            float alpha = sel ? 1f : 0.55f + 0.15f * (1f - MathF.Min(MathF.Abs(dist), 1f));
-            Color labelCol = Color.White * alpha;
-
-            // Layout: label on the left side of the row, control on the right.
-            float labelW = alphabetFont != null ? alphabetFont.MeasureWidth(label, scale) : 0f;
-            float labelX = W / 2f - 280f + (sel ? 20f : 0f);
-            float labelY = y;
-            float controlX = W / 2f + 280f;
-            float controlMid = labelY + (alphabetFont != null ? 40f : 24f) * scale * 0.5f;
-
-            if (alphabetFont != null)
-            {
-                alphabetFont.DrawString(sb, label, new Vector2(labelX, labelY), labelCol, scale, sel, _alphabetBob);
-            }
-            else
-            {
-                var font = Assets.GetFont(sel ? 24 : 20);
-                font?.DrawText(sb, label, new Vector2(labelX, labelY), labelCol);
-            }
-
-            if (isToggle)
-            {
-                // Checkbox graphic on the right (animated when selected & on).
-                if (_checkboxSheet != null)
+                case PrefKind.Toggle: DrawPrefCheckbox(sb, it.GetB(), 0f, 120f * i - sy, i); break;
+                case PrefKind.Percent:
+                case PrefKind.Number:
                 {
-                    string cbAnim = toggleValue ? "selected" : "unselected";
-                    var cbFrames = _checkboxSheet.GetAnimation(cbAnim)
-                                ?? _checkboxSheet.GetAnimationFuzzy(cbAnim)
-                                ?? _checkboxSheet.Animations.Values.FirstOrDefault();
-                    if (cbFrames != null && cbFrames.Count > 0)
-                    {
-                        var cbf = cbFrames[toggleValue ? Math.Min(_checkAnimFrame % cbFrames.Count, cbFrames.Count - 1) : 0];
-                        float cbScale = sel ? 0.7f : 0.5f;
-                        int cbW = (int)(cbf.SourceRect.Width * cbScale);
-                        int cbH = (int)(cbf.SourceRect.Height * cbScale);
-                        sb.Draw(_checkboxSheet.Texture,
-                            new Rectangle((int)(controlX - cbW / 2f), (int)(controlMid - cbH / 2f), cbW, cbH),
-                            cbf.SourceRect, Color.White * alpha);
-                    }
-                }
-                else
-                {
-                    string valStr = toggleValue ? "ON" : "OFF";
-                    Color valCol = toggleValue ? new Color(120, 255, 160) : new Color(255, 110, 110);
-                    if (alphabetFont != null)
-                    {
-                        float vw = alphabetFont.MeasureWidth(valStr, scale * 0.9f);
-                        alphabetFont.DrawString(sb, valStr, new Vector2(controlX - vw / 2f, labelY), valCol * alpha, scale * 0.9f, sel, _alphabetBob);
-                    }
+                    string txt = it.Kind == PrefKind.Percent ? $"{(int)Math.Round(it.GetF() * 100)}%" : (it.Fmt != null ? it.Fmt(it.GetF()) : it.GetF().ToString());
+                    float tw = def?.Width(txt) ?? 100;
+                    def?.Draw(sb, txt, 15f, y, 1f, _alphabetBob);
+                    labelX += tw - 75f;
+                    break;
                 }
             }
-            else if (isVolume)
-            {
-                float vol = i == 5 ? data.MusicVolume : data.SfxVolume;
-                int barW = 220;
-                int barH = sel ? 18 : 12;
-                int barX = (int)(controlX - barW / 2f);
-                int barY = (int)(controlMid - barH / 2f);
-                int fillW = (int)(barW * vol);
-
-                sb.Draw(Assets.Pixel, new Rectangle(barX - 2, barY - 2, barW + 4, barH + 4), Color.White * (alpha * 0.4f));
-                sb.Draw(Assets.Pixel, new Rectangle(barX, barY, barW, barH), new Color(20, 20, 35) * alpha);
-                Color barColor = sel ? new Color(49, 176, 209) : new Color(120, 160, 180);
-                sb.Draw(Assets.Pixel, new Rectangle(barX, barY, fillW, barH), barColor * alpha);
-
-                if (alphabetFont != null)
-                {
-                    string pct = $"{(int)(vol * 100)}%";
-                    float pw = alphabetFont.MeasureWidth(pct, scale * 0.55f);
-                    alphabetFont.DrawString(sb, pct, new Vector2(barX + barW + 14, labelY), Color.White * alpha, scale * 0.55f, false, 0f);
-                }
-            }
+            string label = it.Name;
+            if (bold != null) bold.Draw(sb, label, labelX, y, alpha, _alphabetBob);
+            if (it.PcOnly) MenuUI.Text(sb, 16, "PC", labelX + (bold?.Width(label) ?? 200) + 12, y + 8, new Color(255, 220, 120), alpha, 1);
         }
-
-        DrawPreferenceDescription(sb);
+        string selName = _prefItems[_prefIndex].Name;
+        if (selName == "HUD Scale" || selName == "Safe Area") DrawHudAreaPreview(sb);
+        MenuUI.DescriptionBox(sb, _prefItems[_prefIndex].Desc);
     }
 
-    private void DrawPreferenceDescription(SpriteBatch sb)
+    /// <summary>Corner brackets around the area the gameplay HUD will cover (HUD Scale x Safe Area, centred).</summary>
+    private void DrawHudAreaPreview(SpriteBatch sb)
     {
-        string desc = _prefItems[_prefIndex].Description;
-        if (string.IsNullOrWhiteSpace(desc))
+        float k = PlayScene.HudUserScale;
+        int w = (int)(1280 * k), h = (int)(720 * k), x = (1280 - w) / 2, y = (720 - h) / 2, len = 70, t = 6;
+        float pulse = 0.75f + 0.25f * MathF.Sin(_alphabetBob * 5f);
+        var col = new Color(0xFA, 0xFD, 0x6D);   // ControlsMenu device-bar yellow
+        foreach (var (cx, cy, dx, dy) in new[] { (x, y, 1, 1), (x + w, y, -1, 1), (x, y + h, 1, -1), (x + w, y + h, -1, -1) })
         {
-            return;
+            for (int pass = 0; pass < 2; pass++)
+            {
+                int o = pass == 0 ? 3 : 0; var c = pass == 0 ? Color.Black : Color.Lerp(Color.White, col, pulse);
+                var hx = new Rectangle(dx > 0 ? cx - o : cx - len - o, dy > 0 ? cy - o : cy - t - o, len + 2 * o, t + 2 * o);
+                var vy = new Rectangle(dx > 0 ? cx - o : cx - t - o, dy > 0 ? cy - o : cy - len - o, t + 2 * o, len + 2 * o);
+                MenuUI.Rect(sb, hx, c); MenuUI.Rect(sb, vy, c);
+            }
         }
-
-        var font = Assets.GetFont(20);
-        if (font == null)
-        {
-            return;
-        }
-
-        var size = font.MeasureString(desc);
-        int boxW = (int)size.X + 30;
-        int boxH = (int)size.Y + 20;
-        int x = (FNFGame.SCREEN_WIDTH - boxW) / 2;
-        int y = FNFGame.SCREEN_HEIGHT - 150;
-        sb.Draw(Assets.Pixel, new Rectangle(x, y, boxW, boxH), new Color(0, 0, 0, 160));
-        sb.Draw(Assets.Pixel, new Rectangle(x, y, boxW, 2), new Color(250, 250, 250, 200));
-        sb.Draw(Assets.Pixel, new Rectangle(x, y + boxH - 2, boxW, 2), new Color(250, 250, 250, 200));
-        font.DrawText(sb, desc, new Vector2(x + 15, y + 10), Color.White);
     }
+
+    private void DrawArrows(SpriteBatch sb, float cx, float cy, float half)
+    {
+        float bob = (float)Math.Sin(_alphabetBob * 6f) * 3f;
+        MenuUI.Text(sb, 30, "<", cx - half - bob, cy - 17, Color.White, 1f, 2, 0.5f);
+        MenuUI.Text(sb, 30, ">", cx + half + bob, cy - 17, Color.White, 1f, 2, 0.5f);
+    }
+
+    /// <summary>CheckboxPreferenceItem: checkboxThingie atlas, setGraphicSize(140 * 0.7) (scale 0.7, origin 70,112.5 from the
+    /// first atlas frame), 'static' = "Check Box unselected" offset (0,0); 'checked' = "Check Box selecting animation"
+    /// (24 fps, not looped, replayed on toggle) offset (17, 70).</summary>
+    private void DrawPrefCheckbox(SpriteBatch sb, bool on, float x, float y, int idx)
+    {
+        if (_checkboxSheet == null) return;
+        var frames = _checkboxSheet.GetAnimation(on ? "Check Box selecting animation" : "Check Box unselected");
+        if (frames == null || frames.Count == 0) return;
+        int fi = 0;
+        if (on)
+        {
+            float t = (_prefToggleTime != null && idx < _prefToggleTime.Length) ? _alphabetBob - _prefToggleTime[idx] : 99f;
+            fi = Math.Min(frames.Count - 1, (int)(t * 24f));
+        }
+        var f = frames[fi];
+        const float s = 0.7f;
+        float ox = on ? 17f : 0f, oy = on ? 70f : 0f;
+        float bx = x - ox + 70f * (1f - s), by = y - oy + 112.5f * (1f - s);
+        sb.Draw(f.Texture ?? _checkboxSheet.Texture, new Vector2(bx + f.Offset.X * s, by + f.Offset.Y * s), f.SourceRect, Color.White, 0f, Vector2.Zero, s, SpriteEffects.None, 0f);
+    }
+
+    private void DrawPreferenceDescription(SpriteBatch sb) => MenuUI.DescriptionBox(sb, _prefItems[_prefIndex].Desc);
 
     private void UpdateSaveData()
     {
@@ -742,402 +747,136 @@ public class OptionsScene : Scene
 
     private void DrawSaveDataMenu(SpriteBatch sb)
     {
-        string[] items = { "CLEAR SAVE DATA", "BACK" };
-        var alphabetFont = AlphabetFont.Bold;
-        const float anchorY = 280f;
-        const float spacing = 130f;
+        // SaveDataMenu.createItem: TextMenuItem(0, 100 + i * 100, name, BOLD).screenCenter(X)
+        MenuUI.DrawTextMenu(sb, new[] { "CLEAR SAVE DATA", "EXIT" }, _prefIndex, 100f, 100f, 0f, _alphabetBob);
+    }
 
-        for (int i = 0; i < items.Length; i++)
-        {
-            bool sel = i == _prefIndex;
-            float dist = i - _prefIndex; // no smoothing needed for 2-item list
-            float scale = sel ? 1.0f : 0.6f;
-            float y = anchorY + dist * spacing;
+    // ControlsMenu camera: follow(camFollow 70x70, lerp 0.06), margin 100 -> deadzone (0, 100, w, h - 200), minScrollY 0.
+    private readonly MenuUI.FollowCam _ctlCam = new MenuUI.FollowCam(100f, 720f - 200f, 0f, 0.06f);
+    private const float CTL_SPACER = 70f, CTL_LABEL_X = 50f;
 
-            string text = items[i];
-            float alpha = sel ? 1f : 0.55f;
-            Color color = (i == 0 && sel) ? new Color(255, 110, 110) : Color.White * alpha;
-
-            if (alphabetFont != null)
-            {
-                float w = alphabetFont.MeasureWidth(text, scale);
-                alphabetFont.DrawString(sb, text, new Vector2((FNFGame.SCREEN_WIDTH - w) / 2f + (sel ? 20f : 0f), y), color, scale, sel, _alphabetBob);
-            }
-            else
-            {
-                var font = Assets.GetFont(sel ? 28 : 24);
-                if (font == null) continue;
-                var sz = font.MeasureString(text);
-                font.DrawText(sb, text, new Vector2((FNFGame.SCREEN_WIDTH - sz.X) / 2, y), color);
-            }
-        }
+    /// <summary>Row y (menu space) of control row r: devices bar -> start 120, header + 70 spacing like ControlsMenu.</summary>
+    private static float CtlRowY(int r, int firstGroupRows)
+    {
+        float y = 120f + CTL_SPACER;                                  // "NOTES" header at 120
+        if (r < firstGroupRows) return y + r * CTL_SPACER;
+        return y + firstGroupRows * CTL_SPACER + CTL_SPACER * 2 + (r - firstGroupRows) * CTL_SPACER;  // blank + "UI" header
     }
 
     private void DrawControlsMenu(SpriteBatch sb)
     {
-        var input = FNFGame.Instance.Input;
-        int W = FNFGame.SCREEN_WIDTH;
-
-        // ?? Dark panel behind controls area ??
-        sb.Draw(Assets.Pixel, new Rectangle(40, 80, W - 80, FNFGame.SCREEN_HEIGHT - 130), new Color(0, 0, 0, 180));
-        // Panel border
-        sb.Draw(Assets.Pixel, new Rectangle(40, 80, W - 80, 2), new Color(49, 176, 209) * 0.6f);
-        sb.Draw(Assets.Pixel, new Rectangle(40, FNFGame.SCREEN_HEIGHT - 50, W - 80, 2), new Color(49, 176, 209) * 0.6f);
-
-        // ?? Tab bar ??
-        string[] tabNames = { "KEYBOARD", "CONTROLLER" };
-        int tabBarY = 92;
-        int tabW = 220;
-        int tabH = 40;
-        int tabStartX = W / 2 - tabW - 10;
-        float tabFlash = _controlOnTab ? (0.6f + 0.4f * MathF.Sin(_selFlash * 2f)) : 0f;
-
-        for (int t = 0; t < 2; t++)
+        // ControlsMenu look: yellow device bar (0xFAFD6D, 100 px) with BOLD "KEYBOARD"/"GAMEPAD" items (TextMenuList
+        // Horizontal: x = w/2 - width - 30 / w/2 + 30), BOLD headers centred, BOLD labels at x 50 (alpha 0.6),
+        // InputItems in the DEFAULT font (selected alpha 1, others 0.6), camera following the selected row.
+        int selRow = _controlTab == 0 ? _controlIndex : _gpBindIndex;
+        float targetY = _controlOnTab ? 0f : CtlRowY(selRow, 4);
+        _ctlCam.Update(targetY, 70f, 1f / 60f);
+        float sy = _ctlCam.ScrollY;
+        var bold = AtlasText.Bold;
+        MenuUI.Rect(sb, new Rectangle(0, (int)(-sy), FNFGame.SCREEN_WIDTH, 100), new Color(0xFA, 0xFD, 0x6D));
+        if (bold != null)
         {
-            int tx = tabStartX + t * (tabW + 20);
-            bool active = t == _controlTab;
-            bool focused = _controlOnTab && active;
-
-            // Tab background
-            Color tabBg = active ? new Color(49, 176, 209, 60) : new Color(30, 30, 40, 100);
-            if (focused) tabBg = Color.Lerp(tabBg, new Color(49, 176, 209, 120), tabFlash);
-            sb.Draw(Assets.Pixel, new Rectangle(tx, tabBarY, tabW, tabH), tabBg);
-
-            // Tab bottom border
-            if (active)
-                sb.Draw(Assets.Pixel, new Rectangle(tx, tabBarY + tabH - 3, tabW, 3), new Color(49, 176, 209));
-            else
-                sb.Draw(Assets.Pixel, new Rectangle(tx, tabBarY + tabH - 1, tabW, 1), new Color(80, 80, 100));
-
-            // Tab text
-            var tabFont = Assets.GetFont(active ? 20 : 18);
-            if (tabFont != null)
-            {
-                var tsz = tabFont.MeasureString(tabNames[t]);
-                Color tc = active ? Color.White : Color.Gray * 0.6f;
-                if (focused) tc = Color.Lerp(Color.White, new Color(49, 176, 209), tabFlash * 0.5f);
-                tabFont.DrawText(sb, tabNames[t], new Vector2(tx + (tabW - tsz.X) / 2, tabBarY + (tabH - tsz.Y) / 2), tc);
-            }
-
-            // Focus arrows on active tab
-            if (focused)
-            {
-                var arrFont = Assets.GetFont(22);
-                if (arrFont != null)
-                {
-                    Color arrCol = new Color(49, 176, 209) * (0.5f + 0.5f * MathF.Sin(_selFlash * 3f));
-                    arrFont.DrawText(sb, "<", new Vector2(tx - 22, tabBarY + 8), arrCol);
-                    arrFont.DrawText(sb, ">", new Vector2(tx + tabW + 6, tabBarY + 8), arrCol);
-                }
-            }
+            string k = "KEYBOARD", g = "GAMEPAD";
+            float ky = (100 - bold.MaxHeight) / 2f - sy;
+            bool tabSel = _controlOnTab;
+            bold.Draw(sb, k, 640 - bold.Width(k) - 30, ky, _controlTab == 0 ? (tabSel ? 1f : 0.85f) : 0.6f, _alphabetBob);
+            bold.Draw(sb, g, 640 + 30, ky, _controlTab == 1 ? (tabSel ? 1f : 0.85f) : 0.6f, _alphabetBob);
         }
+        bold?.DrawCentered(sb, "NOTES", 120f - sy, 1f, _alphabetBob);
+        bold?.DrawCentered(sb, _controlTab == 0 ? "UI" : "MENU", CtlRowY(4, 4) - CTL_SPACER - sy, 1f, _alphabetBob);
+        if (_controlTab == 0) DrawKeyboardBindings(sb, FNFGame.Instance.Input, sy);
+        else DrawControllerBindings(sb, FNFGame.Instance.Input, sy);
 
-        // LB/RB sprites next to tabs
-        int sprSize = 28;
-        if (_buttonSprites.TryGetValue("xbox_lb", out var lbTex))
-            sb.Draw(lbTex, new Rectangle(tabStartX - 38, tabBarY + 6, sprSize, sprSize), Color.White * 0.5f);
-        if (_buttonSprites.TryGetValue("xbox_rb", out var rbTex))
-            sb.Draw(rbTex, new Rectangle(tabStartX + 2 * (tabW + 20) + 8, tabBarY + 6, sprSize, sprSize), Color.White * 0.5f);
-
-        // ?? Bindings content ??
-        if (_controlTab == 0)
-            DrawKeyboardBindings(sb, input);
-        else
-            DrawControllerBindings(sb, input);
     }
 
-    private void DrawKeyboardBindings(SpriteBatch sb, InputManager input)
+    private void DrawCtlLabel(SpriteBatch sb, string text, float y, bool sel)
+        => AtlasText.Bold?.Draw(sb, text, CTL_LABEL_X + (sel ? 0f : 0f), y, sel ? 1f : 0.6f, _alphabetBob);
+
+    private void DrawCtlValue(SpriteBatch sb, string text, float x, float y, bool sel, bool waiting)
     {
-        int W = FNFGame.SCREEN_WIDTH;
-        int startY = 150;
-        int lineH = 52;
+        var def = AtlasText.Default;
+        if (def == null) return;
+        if (waiting) { float f = 0.5f + 0.5f * MathF.Sin(_selFlash * 4f); def.Draw(sb, "PRESS ANY KEY", x, y, f, _alphabetBob, 0.7f); return; }
+        // just (re)bound: quick squash-and-stretch slap on the selected cell (bindings save immediately)
+        float since = _alphabetBob - _bindSavedT, sc = 0.8f;
+        if (sel && since >= 0f && since < 0.3f) sc *= 1f + 0.25f * MathF.Sin(since / 0.3f * MathF.PI);
+        def.Draw(sb, text, x, y + (0.8f - sc) * 30f, sel ? 1f : 0.6f, _alphabetBob, sc);
+    }
 
-        Color[] noteColors = {
-            new Color(194, 75, 153),  // Left - purple/pink
-            new Color(0, 255, 255),   // Down - cyan
-            new Color(18, 250, 5),    // Up - green
-            new Color(249, 57, 63),   // Right - red
-        };
+    private Keys[] KbRow(int r) => r switch
+    {
+        4 => Input.UiAccept, 5 => Input.UiBack, 6 => Input.UiPause, 7 => Input.UiReset, _ => null
+    };
 
-        // Column headers
-        int labelX = 120;
-        int col1X = W / 2 - 40;
-        int col2X = W / 2 + 180;
-        var hdrFont = Assets.GetFont(14);
-        if (hdrFont != null)
+    /// <summary>Bind slot (row, col). Note lanes: a key already used by another lane is swapped onto this slot's old key.</summary>
+    private void AssignKey(int row, int col, Keys key)
+    {
+        if (row < 4)
         {
-            hdrFont.DrawText(sb, "ACTION", new Vector2(labelX, startY - 24), Color.Gray * 0.7f);
-            hdrFont.DrawText(sb, "PRIMARY", new Vector2(col1X, startY - 24), Color.Gray * 0.7f);
-            hdrFont.DrawText(sb, "SECONDARY", new Vector2(col2X, startY - 24), Color.Gray * 0.7f);
+            var cols = new[] { Input.NoteKeysAlt, Input.NoteKeysArrow };
+            var old = cols[col][row];
+            for (int c = 0; c < 2; c++) for (int l = 0; l < 4; l++)
+                if (cols[c][l] == key && !(c == col && l == row)) cols[c][l] = old;
+            cols[col][row] = key;
         }
-        // Header divider
-        sb.Draw(Assets.Pixel, new Rectangle(80, startY - 4, W - 160, 1), Color.Gray * 0.3f);
+        else
+        {
+            var k = KbRow(row);
+            if (k[1 - col] == key) k[1 - col] = k[col];   // same key in both slots: swap instead of duplicating
+            k[col] = key;
+        }
+    }
 
-        string[][] bindings = {
-            new[] { input.NoteKeysAlt[0].ToString(), input.NoteKeysArrow[0].ToString() },
-            new[] { input.NoteKeysAlt[1].ToString(), input.NoteKeysArrow[1].ToString() },
-            new[] { input.NoteKeysAlt[2].ToString(), input.NoteKeysArrow[2].ToString() },
-            new[] { input.NoteKeysAlt[3].ToString(), input.NoteKeysArrow[3].ToString() },
-            new[] { "ENTER", "SPACE" },
-            new[] { "ESCAPE", "" },
-            new[] { "ENTER", "" },
-            new[] { "", "" }
-        };
+    internal static string KeyName(Keys k) => k switch
+    {
+        Keys.None => "---", Keys.Escape => "ESC", Keys.Back => "BACKSPACE", Keys.Enter => "ENTER", Keys.Space => "SPACE",
+        Keys.LeftShift => "L SHIFT", Keys.RightShift => "R SHIFT", Keys.LeftControl => "L CTRL", Keys.RightControl => "R CTRL",
+        Keys.LeftAlt => "L ALT", Keys.RightAlt => "R ALT", Keys.OemComma => ",", Keys.OemPeriod => ".", Keys.OemQuestion => "/",
+        Keys.OemSemicolon => ";", Keys.OemQuotes => "'", Keys.OemOpenBrackets => "[", Keys.OemCloseBrackets => "]",
+        Keys.OemMinus => "-", Keys.OemPlus => "=", Keys.OemTilde => "~", Keys.OemPipe => "BACKSLASH",
+        >= Keys.D0 and <= Keys.D9 => ((int)(k - Keys.D0)).ToString(),
+        >= Keys.NumPad0 and <= Keys.NumPad9 => "NUM " + (int)(k - Keys.NumPad0),
+        _ => k.ToString().ToUpperInvariant()
+    };
 
+    private void DrawKeyboardBindings(SpriteBatch sb, InputManager input, float sy)
+    {
         for (int i = 0; i < _controlNames.Length; i++)
         {
             bool sel = i == _controlIndex && !_controlOnTab;
-            int y = startY + i * lineH;
-            if (y > FNFGame.SCREEN_HEIGHT - 70) continue;
-
-            // Row highlight
-            if (sel)
-            {
-                float pulse = 0.08f + 0.04f * MathF.Sin(_selFlash * 2f);
-                sb.Draw(Assets.Pixel, new Rectangle(60, y - 4, W - 120, lineH - 4), new Color(49, 176, 209) * pulse);
-            }
-            // Row divider
-            sb.Draw(Assets.Pixel, new Rectangle(80, y + lineH - 6, W - 160, 1), Color.Gray * 0.12f);
-
-            // Selection arrow
-            if (sel)
-            {
-                var arrFont = Assets.GetFont(20);
-                if (arrFont != null)
-                {
-                    Color arrCol = new Color(49, 176, 209) * (0.6f + 0.4f * MathF.Sin(_selFlash * 3f));
-                    arrFont.DrawText(sb, ">", new Vector2(labelX - 24, y + 2), arrCol);
-                }
-            }
-
-            // Note color indicator
-            if (i < 4)
-            {
-                Color nc = noteColors[i];
-                sb.Draw(Assets.Pixel, new Rectangle(labelX - 8, y + 6, 4, 16), nc);
-            }
-
-            // Label
-            Color labelCol;
-            if (sel) labelCol = Color.White;
-            else if (i < 4) labelCol = noteColors[i] * 0.8f;
-            else labelCol = Color.Gray * 0.7f;
-
-            var labelFont = Assets.GetFont(sel ? 22 : 18);
-            if (labelFont != null)
-                labelFont.DrawText(sb, _controlNames[i], new Vector2(labelX, y + 2), labelCol);
-
-            // Key boxes
-            bool canRebind = i < 4;
+            float y = CtlRowY(i, 4) - sy;
+            if (y < -80 || y > 760) continue;
+            if (i >= 8) { AtlasText.Bold?.DrawCentered(sb, _controlNames[i].ToUpperInvariant(), y, sel ? 1f : 0.6f, _alphabetBob); continue; }
+            DrawCtlLabel(sb, _controlNames[i].ToUpperInvariant(), y, sel);
             for (int k = 0; k < 2; k++)
             {
-                string keyStr = (i < bindings.Length && k < bindings[i].Length) ? bindings[i][k] : "";
-                if (string.IsNullOrEmpty(keyStr)) continue;
-
-                int kx = k == 0 ? col1X : col2X;
-
-                if (_waitingForKey && i == _rebindTarget && k == 0)
-                {
-                    // Flashing "press a key" prompt
-                    float f = 0.5f + 0.5f * MathF.Sin(_selFlash * 4f);
-                    DrawKeyBox(sb, "...", kx, y, true, Color.Cyan * f, true);
-                }
-                else
-                {
-                    Color boxCol = sel ? (canRebind ? new Color(49, 176, 209) : Color.White * 0.8f) : Color.Gray * 0.5f;
-                    DrawKeyBox(sb, keyStr, kx, y, sel, boxCol, canRebind && k == 0);
-                }
+                var key = i < 4 ? (k == 0 ? input.NoteKeysAlt[i] : input.NoteKeysArrow[i]) : KbRow(i)[k];
+                bool cellSel = sel && k == _kbCol;
+                DrawCtlValue(sb, KeyName(key), CTL_LABEL_X + 560 + k * 320, y + 6, cellSel, _waitingForKey && i == _rebindTarget && k == _kbCol);
             }
         }
     }
 
-    private void DrawKeyBox(SpriteBatch sb, string text, int x, int y, bool highlighted, Color color, bool editable)
+    private void DrawControllerBindings(SpriteBatch sb, InputManager input, float sy)
     {
-        var font = Assets.GetFont(highlighted ? 18 : 15);
-        if (font == null) return;
-        var sz = font.MeasureString(text);
-        int boxW = Math.Max((int)sz.X + 24, 70);
-        int boxH = 30;
-        int by = y + 2;
-
-        // Box background
-        Color bg = highlighted ? new Color(40, 50, 70, 200) : new Color(25, 25, 35, 150);
-        sb.Draw(Assets.Pixel, new Rectangle(x, by, boxW, boxH), bg);
-        // Box border
-        Color border = highlighted ? color : Color.Gray * 0.3f;
-        sb.Draw(Assets.Pixel, new Rectangle(x, by, boxW, 1), border);
-        sb.Draw(Assets.Pixel, new Rectangle(x, by + boxH - 1, boxW, 1), border);
-        sb.Draw(Assets.Pixel, new Rectangle(x, by, 1, boxH), border);
-        sb.Draw(Assets.Pixel, new Rectangle(x + boxW - 1, by, 1, boxH), border);
-
-        // Text
-        Color textCol = highlighted ? Color.White : Color.Gray * 0.8f;
-        font.DrawText(sb, text, new Vector2(x + (boxW - sz.X) / 2, by + (boxH - sz.Y) / 2), textCol);
-    }
-
-    private void DrawControllerBindings(SpriteBatch sb, InputManager input)
-    {
-        int W = FNFGame.SCREEN_WIDTH;
-        int startY = 150;
-        int lineH = 52;
-
-        Color[] noteColors = {
-            new Color(194, 75, 153),
-            new Color(0, 255, 255),
-            new Color(18, 250, 5),
-            new Color(249, 57, 63),
-        };
-
-        int labelX = 120;
-        int col0X = W / 2 - 80;
-        int col1X = col0X + 150;
-        int col2X = col1X + 150;
-
-        // Column headers with icons
-        var hdrFont = Assets.GetFont(14);
-        if (hdrFont != null)
+        string[] nav = { "Confirm", "Cancel", "Pause", "Switch Char" };
+        Microsoft.Xna.Framework.Input.Buttons[] navB = { input.ConfirmButton, input.CancelButton, input.PauseButton, input.SwitchCharButton };
+        for (int r = 0; r < 10; r++)
         {
-            hdrFont.DrawText(sb, "ACTION", new Vector2(labelX, startY - 24), Color.Gray * 0.7f);
-            hdrFont.DrawText(sb, "D-PAD", new Vector2(col0X, startY - 24), Color.Gray * 0.7f);
-            hdrFont.DrawText(sb, "FACE", new Vector2(col1X, startY - 24), Color.Gray * 0.7f);
-            hdrFont.DrawText(sb, "BUMPER/TRIG", new Vector2(col2X, startY - 24), Color.Gray * 0.7f);
-        }
-        sb.Draw(Assets.Pixel, new Rectangle(80, startY - 4, W - 160, 1), Color.Gray * 0.3f);
-
-        // ?? Note binding rows (4) ??
-        for (int i = 0; i < 4; i++)
-        {
-            bool rowSel = i == _gpBindIndex && !_controlOnTab;
-            int y = startY + i * lineH;
-
-            // Row highlight
-            if (rowSel)
+            bool rowSel = r == _gpBindIndex && !_controlOnTab;
+            float y = CtlRowY(r, 4) - sy;
+            if (y < -80 || y > 760) continue;
+            if (r >= 8) { AtlasText.Bold?.DrawCentered(sb, r == 8 ? "DEFAULT BUTTONS" : "EXIT", y, rowSel ? 1f : 0.6f, _alphabetBob); continue; }
+            DrawCtlLabel(sb, (r < 4 ? _gpBindNames[r] : nav[r - 4]).ToUpperInvariant(), y, rowSel);
+            int cols = r < 4 ? 3 : 1;
+            for (int c = 0; c < cols; c++)
             {
-                float pulse = 0.08f + 0.04f * MathF.Sin(_selFlash * 2f);
-                sb.Draw(Assets.Pixel, new Rectangle(60, y - 4, W - 120, lineH - 4), new Color(49, 176, 209) * pulse);
-            }
-            sb.Draw(Assets.Pixel, new Rectangle(80, y + lineH - 6, W - 160, 1), Color.Gray * 0.12f);
-
-            // Selection arrow
-            if (rowSel)
-            {
-                var arrFont = Assets.GetFont(20);
-                if (arrFont != null)
-                {
-                    Color arrCol = new Color(49, 176, 209) * (0.6f + 0.4f * MathF.Sin(_selFlash * 3f));
-                    arrFont.DrawText(sb, ">", new Vector2(labelX - 24, y + 2), arrCol);
-                }
-            }
-
-            // Note color bar
-            sb.Draw(Assets.Pixel, new Rectangle(labelX - 8, y + 6, 4, 16), noteColors[i]);
-
-            // Label
-            Color labelCol = rowSel ? Color.White : noteColors[i] * 0.8f;
-            var labelFont = Assets.GetFont(rowSel ? 22 : 18);
-            if (labelFont != null)
-                labelFont.DrawText(sb, _gpBindNames[i], new Vector2(labelX, y + 2), labelCol);
-
-            // Three binding columns
-            Microsoft.Xna.Framework.Input.Buttons[] bindings = {
-                input.NoteButtons[i], input.NoteFaceButtons[i], input.NoteTriggerButtons[i]
-            };
-            int[] colXs = { col0X, col1X, col2X };
-
-            for (int col = 0; col < 3; col++)
-            {
-                bool cellSel = rowSel && col == _gpBindCol;
-                int cx = colXs[col];
-
-                if (_waitingForButton && cellSel)
-                {
-                    float f = 0.5f + 0.5f * MathF.Sin(_selFlash * 4f);
-                    DrawButtonCell(sb, null, "...", cx, y, true, Color.Cyan * f);
-                }
-                else
-                {
-                    string spriteName = GetButtonSpriteName(bindings[col]);
-                    string fallbackText = FormatButtonName(bindings[col]);
-                    Texture2D btnTex = null;
-                    if (spriteName != null) _buttonSprites.TryGetValue(spriteName, out btnTex);
-                    Color boxCol = cellSel ? new Color(49, 176, 209) : Color.Gray * 0.4f;
-                    DrawButtonCell(sb, btnTex, fallbackText, cx, y, cellSel, boxCol);
-                }
-            }
-        }
-
-        // ?? Divider before nav bindings ??
-        int divY = startY + 4 * lineH;
-        sb.Draw(Assets.Pixel, new Rectangle(80, divY - 4, W - 160, 1), new Color(49, 176, 209) * 0.3f);
-        var divFont = Assets.GetFont(12);
-        if (divFont != null)
-            divFont.DrawText(sb, "NAVIGATION", new Vector2(labelX, divY + 2), Color.Gray * 0.5f);
-
-        // ?? Confirm / Cancel / Pause rows ??
-        string[] navLabels = { "Confirm", "Cancel", "Pause", "Switch Char" };
-        Microsoft.Xna.Framework.Input.Buttons[] navBindings = { input.ConfirmButton, input.CancelButton, input.PauseButton, input.SwitchCharButton };
-        int navStartY = divY + 20;
-
-        for (int n = 0; n < 4; n++)
-        {
-            int idx = 4 + n;
-            bool rowSel = _gpBindIndex == idx && !_controlOnTab;
-            int y = navStartY + n * lineH;
-
-            if (rowSel)
-            {
-                float pulse = 0.08f + 0.04f * MathF.Sin(_selFlash * 2f);
-                sb.Draw(Assets.Pixel, new Rectangle(60, y - 4, W - 120, lineH - 4), new Color(49, 176, 209) * pulse);
-            }
-            sb.Draw(Assets.Pixel, new Rectangle(80, y + lineH - 6, W - 160, 1), Color.Gray * 0.12f);
-
-            if (rowSel)
-            {
-                var arrFont = Assets.GetFont(20);
-                if (arrFont != null)
-                {
-                    Color arrCol = new Color(49, 176, 209) * (0.6f + 0.4f * MathF.Sin(_selFlash * 3f));
-                    arrFont.DrawText(sb, ">", new Vector2(labelX - 24, y + 2), arrCol);
-                }
-            }
-
-            Color labelCol = rowSel ? Color.White : Color.Gray * 0.7f;
-            var labelFont = Assets.GetFont(rowSel ? 22 : 18);
-            if (labelFont != null)
-                labelFont.DrawText(sb, navLabels[n], new Vector2(labelX, y + 2), labelCol);
-
-            // Single button binding
-            if (_waitingForButton && rowSel)
-            {
-                float f = 0.5f + 0.5f * MathF.Sin(_selFlash * 4f);
-                DrawButtonCell(sb, null, "...", col0X, y, true, Color.Cyan * f);
-            }
-            else
-            {
-                string spriteName = GetButtonSpriteName(navBindings[n]);
-                string fallbackText = FormatButtonName(navBindings[n]);
-                Texture2D btnTex = null;
-                if (spriteName != null) _buttonSprites.TryGetValue(spriteName, out btnTex);
-                Color boxCol = rowSel ? new Color(49, 176, 209) : Color.Gray * 0.4f;
-                DrawButtonCell(sb, btnTex, fallbackText, col0X, y, rowSel, boxCol);
-            }
-        }
-
-        // ?? Back item ??
-        {
-            bool backSel = _gpBindIndex == 8 && !_controlOnTab;
-            int y = navStartY + 4 * lineH + 10;
-            if (backSel)
-            {
-                float pulse = 0.08f + 0.04f * MathF.Sin(_selFlash * 2f);
-                sb.Draw(Assets.Pixel, new Rectangle(60, y - 4, W - 120, lineH - 4), new Color(49, 176, 209) * pulse);
-            }
-            var bFont = Assets.GetFont(backSel ? 24 : 20);
-            Color bCol = backSel ? Color.Yellow : Color.Gray;
-            if (bFont != null)
-            {
-                var sz = bFont.MeasureString("BACK");
-                bFont.DrawText(sb, "BACK", new Vector2((W - sz.X) / 2, y + 2), bCol);
+                var btn = r < 4 ? (c == 0 ? input.NoteButtons[r] : c == 1 ? input.NoteFaceButtons[r] : input.NoteTriggerButtons[r]) : navB[r - 4];
+                bool cellSel = rowSel && (r >= 4 || c == _gpBindCol);
+                float x = 560 + c * 230;
+                if (_waitingForButton && cellSel) { DrawCtlValue(sb, "", x, y, true, true); continue; }
+                int gx = ButtonPrompts.DrawGlyph(sb, Assets, true, btn, "", (int)x, (int)y + 4, 56, cellSel ? 1f : 0.6f);
+                AtlasText.Default?.Draw(sb, FormatButtonName(btn), x + 64, y + 8, cellSel ? 1f : 0.6f, _alphabetBob, 0.6f);
             }
         }
     }
@@ -1203,7 +942,9 @@ public class OptionsScene : Scene
         };
     }
 
-    internal static string FormatButtonName(Microsoft.Xna.Framework.Input.Buttons btn)
+    internal static string FormatButtonName(Microsoft.Xna.Framework.Input.Buttons btn) => ControllerIcons.ButtonName(btn);   // Xbox or PlayStation names
+
+    internal static string FormatButtonNameXbox(Microsoft.Xna.Framework.Input.Buttons btn)
     {
         return btn switch
         {
@@ -1223,71 +964,26 @@ public class OptionsScene : Scene
 
     private void DrawOffsetMenu(SpriteBatch sb)
     {
+        // Port calibrator drawn in the OptionsState style: BOLD AtlasText items centred (100 + i * 100), DEFAULT font info.
         var data = HighscoreManager.Data;
-        var font = Assets.GetFont(28);
-        if (font != null)
-        {
-            string text = $"Global Audio Offset: < {data.GlobalOffset} ms >";
-            var sz = font.MeasureString(text);
-            font.DrawText(sb, text, new Vector2((FNFGame.SCREEN_WIDTH - sz.X) / 2, 220), Color.White);
+        var bold = AtlasText.Bold; var def = AtlasText.Default;
+        bold?.DrawCentered(sb, "GLOBAL OFFSET", 100f, 0.6f, _alphabetBob);
+        bold?.DrawCentered(sb, $"< {data.GlobalOffset} MS >", 200f, 1f, _alphabetBob);
+        string desc = data.GlobalOffset == 0 ? "Offset is neutral"
+            : data.GlobalOffset > 0 ? $"Audio plays {data.GlobalOffset}ms later" : $"Audio plays {Math.Abs(data.GlobalOffset)}ms earlier";
+        def?.DrawCentered(sb, desc, 300f, 0.8f, _alphabetBob, 0.6f);
 
-            // Visual beat indicator for calibration (original: LatencyState-style ticker)
-            // Horizontal bar with a moving indicator
-            int barX = FNFGame.SCREEN_WIDTH / 2 - 250;
-            int barY = 340;
-            int barW = 500;
-            int barH = 30;
-            
-            // Bar background
-            sb.Draw(Assets.Pixel, new Rectangle(barX - 2, barY - 2, barW + 4, barH + 4), Color.White * 0.2f);
-            sb.Draw(Assets.Pixel, new Rectangle(barX, barY, barW, barH), new Color(20, 20, 40));
-            
-            // Center line (the "target" beat should land here)
-            int centerLineX = barX + barW / 2;
-            sb.Draw(Assets.Pixel, new Rectangle(centerLineX - 1, barY - 6, 3, barH + 12), Color.White);
-            
-            // Moving ticker based on beat timer
-            float beatInterval = 60f / _offsetBeatBPM;
-            float progress = _offsetBeatTimer / beatInterval; // 0?1 within a beat
-            int tickerX = barX + (int)(progress * barW);
-            Color tickerColor = Color.Lerp(new Color(49, 176, 209), Color.White, _offsetBeatVisual);
-            sb.Draw(Assets.Pixel, new Rectangle(tickerX - 4, barY - 4, 9, barH + 8), tickerColor);
-            
-            // Beat pulse circle
-            float pulseSize = 40 + _offsetBeatVisual * 30;
-            int cx = FNFGame.SCREEN_WIDTH / 2;
-            int cy = 440;
-            Color pulseColor = Color.Lerp(new Color(80, 80, 200), Color.White, _offsetBeatVisual);
-            sb.Draw(Assets.Pixel,
-                new Rectangle((int)(cx - pulseSize / 2), (int)(cy - pulseSize / 2), (int)pulseSize, (int)pulseSize),
-                pulseColor * (0.3f + _offsetBeatVisual * 0.7f));
-            
-            // Label text
-            var sf = Assets.GetFont(16);
-            if (sf != null)
-            {
-                string beatText = "Visual Beat Calibration (120 BPM)";
-                var bsz = sf.MeasureString(beatText);
-                sf.DrawText(sb, beatText, new Vector2((FNFGame.SCREEN_WIDTH - bsz.X) / 2, cy + 50), Color.Gray);
-                
-                // Offset value description
-                string desc = data.GlobalOffset == 0 
-                    ? "Offset is neutral" 
-                    : data.GlobalOffset > 0 
-                        ? $"Audio plays {data.GlobalOffset}ms later" 
-                        : $"Audio plays {Math.Abs(data.GlobalOffset)}ms earlier";
-                var dsz = sf.MeasureString(desc);
-                sf.DrawText(sb, desc, new Vector2((FNFGame.SCREEN_WIDTH - dsz.X) / 2, 270), Color.Gray);
-            }
-
-            string hint = "LEFT/RIGHT: �1ms   SHIFT+LEFT/RIGHT: �5ms   ESC: Back";
-            var hFont = Assets.GetFont(18);
-            if (hFont != null)
-            {
-                var hsz = hFont.MeasureString(hint);
-                hFont.DrawText(sb, hint, new Vector2((FNFGame.SCREEN_WIDTH - hsz.X) / 2, 530), Color.Gray);
-            }
-        }
+        // beat ticker (120 BPM): the cursor should cross the centre line on every tick sound
+        int barX = FNFGame.SCREEN_WIDTH / 2 - 250, barY = 400, barW = 500, barH = 26;
+        MenuUI.Rect(sb, new Rectangle(barX - 4, barY - 4, barW + 8, barH + 8), Color.Black);
+        MenuUI.Rect(sb, new Rectangle(barX, barY, barW, barH), new Color(255, 255, 255, 70));
+        int centerLineX = barX + barW / 2;
+        MenuUI.Rect(sb, new Rectangle(centerLineX - 2, barY - 10, 4, barH + 20), Color.White);
+        float progress = _offsetBeatTimer / (60f / _offsetBeatBPM);
+        int tickerX = barX + (int)(progress * barW);
+        MenuUI.Rect(sb, new Rectangle(tickerX - 6, barY - 6, 12, barH + 12), Color.Black);
+        MenuUI.Rect(sb, new Rectangle(tickerX - 4, barY - 4, 8, barH + 8), Color.Lerp(new Color(255, 220, 120), Color.White, _offsetBeatVisual));
+        def?.DrawCentered(sb, "Visual beat calibration (120 BPM)", 450f, 0.8f, _alphabetBob, 0.5f);
     }
 
     private void DrawMenuItem(SpriteBatch sb, string text, int y, bool selected, Color color)
@@ -1325,3 +1021,4 @@ public class OptionsScene : Scene
         }
     }
 }
+

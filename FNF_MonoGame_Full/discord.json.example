@@ -1,0 +1,9 @@
+{
+  "clientId": "YOUR_DISCORD_APP_ID_HERE",
+  "enabled": true,
+  "_comment": "1. Go to https://discord.com/developers/applications and create a new app",
+  "_comment2": "2. Copy the Application ID (numbers only) and paste above",
+  "_comment3": "3. Go to Rich Presence > Art Assets in your app",
+  "_comment4": "4. Upload images with these exact names: logo, menu, playing, paused, results, freeplay, storymode, charselect, options, week1, week2, week3, week4, week5, week6, week7, week8",
+  "_comment5": "5. Rename this file to discord.json and place next to the exe or in Content/"
+}

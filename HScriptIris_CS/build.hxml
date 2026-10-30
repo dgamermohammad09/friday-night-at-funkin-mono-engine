@@ -1,0 +1,8 @@
+-cp src
+-main IrisEntry
+-cs gen
+-D no-compilation
+-D real-position
+-D hscriptPos
+-D net-ver=45
+--dce no

@@ -6,11 +6,11 @@ using FNF_MonoGame.Engine;
 namespace FNF_MonoGame.Scenes;
 
 /// <summary>
-/// Story Mode week-selection — faithful recreation of FNF StoryMenuState.
+/// Story Mode week-selection ? faithful recreation of FNF StoryMenuState.
 /// Yellow banner with animated character props, week title images in
 /// the centre, track list bottom-left, difficulty selector bottom-right.
 /// </summary>
-public class StoryModeScene : Scene
+public partial class StoryModeScene : Scene
 {
     // ?? Week data ??
     private readonly List<WeekData> _weeks = new();
@@ -56,6 +56,8 @@ public class StoryModeScene : Scene
 
     public override void Load()
     {
+        Game.Discord?.SetStoryModeState();
+
         LoadWeekData();
 
         // Load difficulty textures (from story_menu/difficulties)
@@ -90,6 +92,7 @@ public class StoryModeScene : Scene
 
         // Load difficulty selector arrows spritesheet
         _arrowsSheet = SpriteSheet.Load(Game, "menus/story_menu/arrows");
+        PsychLoadAssets();
 
         if (!Audio.MusicPlaying)
             Audio.PlayMusic("music/freakyMenu", true);
@@ -98,18 +101,18 @@ public class StoryModeScene : Scene
     private void LoadWeekData()
     {
         string levelsDir = Assets.ResolveDirectory("data/levels")
-                        ?? Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Content", "data", "levels");
-        if (!Directory.Exists(levelsDir)) return;
+                        ?? System.IO.Path.Combine(FNF_MonoGame.Engine.AssetManager.ContentRoot, "data", "levels");
+        if (!global::FNF_MonoGame.Engine.FsCI.DirectoryExists(levelsDir)) return;
 
         string[] order = { "tutorial", "week1", "week2", "week3", "week4", "week5", "week6", "week7", "weekend1", "sserafim" };
 
         foreach (var wid in order)
         {
             string jp = Path.Combine(levelsDir, wid + ".json");
-            if (!File.Exists(jp)) continue;
+            if (!global::FNF_MonoGame.Engine.FsCI.FileExists(jp)) continue;
             try
             {
-                var d = JsonConvert.DeserializeObject<LevelJson>(File.ReadAllText(jp));
+                var d = JsonConvert.DeserializeObject<LevelJson>(global::FNF_MonoGame.Engine.FsCI.ReadAllText(jp));
                 if (d == null) continue;
                 _weeks.Add(new WeekData
                 {
@@ -141,6 +144,7 @@ public class StoryModeScene : Scene
         {
             _weeks[i].Locked = false;
         }
+        LoadPsychWeeks();   // Psych mod weeks (StoryModeScene.Psych.cs)
     }
 
     private List<string> ExtractPropNames(LevelJson lj)
@@ -184,155 +188,313 @@ public class StoryModeScene : Scene
         _arrowsSheet?.Dispose();
     }
 
+    // ===============================================================================================================
+    // StoryMenuState (ui/story/StoryMenuState.hx + LevelTitle.hx) port: selection logic, title list, difficulty
+    // sprite tween, background colour tween, score lerp, confirm flash + camera fade, draw order by zIndex.
+    // ===============================================================================================================
+    private static readonly string[] DIFFICULTY_LIST = { "easy", "normal", "hard" };   // Constants.DEFAULT_DIFFICULTY_LIST
+    private static string _rememberedLevelId, _rememberedDifficulty = "normal";
+    private float[] _titleY, _titleTargetY;
+    private Color _bgColor, _bgFrom, _bgTo; private float _bgTweenT = -1f;
+    private float _highScoreLerp = 12345678f; private int _highScore;
+    private float _diffTweenT = 1f; private string _diffShown = "normal";
+    private bool _flashing; private float _flashTick; private bool _flashCyan;
+    private float _fadeT = -1f;
+    private float _time;
+    private readonly Dictionary<string, SpriteSheet> _diffAtlases = new();
+    private readonly Dictionary<string, string> _songNames = new();
+    private bool _inited;
+
+    private string CurDiff => DiffList[Math.Clamp(_difficultyIndex, 0, DiffList.Length - 1)];
+
+    private void InitState()
+    {
+        _inited = true;
+        int n = _weeks.Count;
+        _titleY = new float[n]; _titleTargetY = new float[n];
+        if (_rememberedLevelId != null) { int i = _weeks.FindIndex(w => w.Id == _rememberedLevelId); if (i >= 0) _selectedIndex = i; }
+        _difficultyIndex = Math.Max(0, System.Array.IndexOf(DIFFICULTY_LIST, _rememberedDifficulty ?? "normal"));
+        for (int i = 0; i < n; i++) { _titleY[i] = BANNER_TOP + BANNER_HEIGHT + 10; _titleTargetY[i] = (TitleH(i) + 20) * i; }
+        _bgColor = _weeks.Count > 0 ? _weeks[_selectedIndex].BackgroundColor : new Color(0xF9, 0xCF, 0x51);
+        PsychOnWeekChanged(null);
+        _diffShown = CurDiff; _diffTweenT = 0f;
+        RepositionTitles();
+        UpdateHighScore();
+    }
+
+    private int TitleH(int i) => _weekBanners.TryGetValue(_weeks[i].Id, out var t) && t != null && t != Assets.Pixel ? t.Height : 70;
+
+    private void RepositionTitles()
+    {
+        int cur = _selectedIndex;
+        _titleTargetY[cur] = 480;
+        for (int i = cur - 1; i >= 0; i--) _titleTargetY[i] = _titleTargetY[i + 1] - Math.Max(TitleH(i) + 20, 125);
+        for (int i = cur + 1; i < _weeks.Count; i++) _titleTargetY[i] = _titleTargetY[i - 1] + (TitleH(i - 1) + 20);
+    }
+
+    private void UpdateHighScore() => _highScore = HighscoreManager.GetWeekScore(_weeks[_selectedIndex].Id, CurDiff);
+
+    private void ChangeLevel(int change)
+    {
+        int prev = _selectedIndex, cur = prev + change;
+        if (cur < 0) cur = _weeks.Count - 1;
+        if (cur >= _weeks.Count) cur = 0;
+        var prevColor = _weeks[prev].BackgroundColor;
+        _selectedIndex = cur; _rememberedLevelId = _weeks[cur].Id; PsychOnWeekChanged(_weeks[prev]);
+        if (cur != prev) Audio.PlaySound("scrollMenu", 0.4f);
+        RepositionTitles();
+        UpdateHighScore();
+        // updateBackground: simple colours -> FlxTween.color(0.9 s, quartOut) from the CURRENT colour
+        if (_weeks[cur].BackgroundColor != prevColor) { _bgFrom = _bgColor; _bgTo = _weeks[cur].BackgroundColor; _bgTweenT = 0f; }
+    }
+
+    private void ChangeDifficulty(int change)
+    {
+        int cur = _difficultyIndex + change;
+        if (cur < 0) cur = DiffList.Length - 1;
+        if (cur >= DiffList.Length) cur = 0;
+        bool changed = cur != _difficultyIndex;
+        _difficultyIndex = cur; _rememberedDifficulty = CurDiff;
+        if (changed) { _diffShown = CurDiff; _diffTweenT = 0f; Audio.PlaySound("scrollMenu", 0.4f); }
+        UpdateHighScore();
+    }
+
     public override void Update(GameTime gameTime)
     {
         float dt = (float)gameTime.ElapsedGameTime.TotalSeconds;
+        if (!_inited && _weeks.Count > 0) InitState();
+        _time += dt;
         _animTimer += dt;
         if (_animTimer >= 1f / 24f) { _animTimer = 0; _animFrame++; }
-        // Beat tracking for prop dance alternation (original FNF: 102 BPM menu music)
         _danceBeatTimer += dt;
         float beatLen = 60f / DANCE_BPM;
         if (_danceBeatTimer >= beatLen) { _danceBeatTimer -= beatLen; _danceBeat++; }
-        // Original FNF StoryMenuState: lerpValue 0.16 per frame
-        _scrollLerp += (_selectedIndex - _scrollLerp) * 10f * dt;
-
-        if (_confirmed)
-        {
-            _confirmTimer -= dt;
-            if (_confirmTimer <= 0)
-            {
-                _confirmed = false; // Prevent calling ChangeScene every frame
-                var w = _weeks[_selectedIndex];
-                if (w.Songs.Count > 0)
-                {
-                    Audio.StopMusic();
-                    Game.Scenes.ChangeScene(new PlayScene(
-                        w.Songs[0], CurrentDifficulties[_difficultyIndex],
-                        w.Songs, 0, w.Id, 0));
-                }
-            }
-            return;
-        }
-
         if (_weeks.Count == 0)
         {
             if (Input.BackPressed) { Audio.PlaySound("cancelMenu"); Game.Scenes.ChangeScene(new MainMenuScene()); }
             return;
         }
 
-        if (Input.UpPressed)   { _selectedIndex = (_selectedIndex - 1 + _weeks.Count) % _weeks.Count; _difficultyIndex = Math.Clamp(_difficultyIndex, 0, CurrentDifficulties.Length - 1); Audio.PlaySound("scrollMenu"); }
-        if (Input.DownPressed)  { _selectedIndex = (_selectedIndex + 1) % _weeks.Count; _difficultyIndex = Math.Clamp(_difficultyIndex, 0, CurrentDifficulties.Length - 1); Audio.PlaySound("scrollMenu"); }
-        if (Input.LeftPressed)  { _difficultyIndex = (_difficultyIndex - 1 + CurrentDifficulties.Length) % CurrentDifficulties.Length; _leftArrowTimer = 0.15f; Audio.PlaySound("scrollMenu"); }
-        if (Input.RightPressed) { _difficultyIndex = (_difficultyIndex + 1) % CurrentDifficulties.Length; _rightArrowTimer = 0.15f; Audio.PlaySound("scrollMenu"); }
-        if (_leftArrowTimer > 0) _leftArrowTimer -= dt;
-        if (_rightArrowTimer > 0) _rightArrowTimer -= dt;
-
-        if (Input.ConfirmPressed)
+        // highScoreLerp = snap(smoothLerpPrecision(lerp, highScore, elapsed, 0.307), highScore, 1)
+        _highScoreLerp = _highScore + (_highScoreLerp - _highScore) * (float)Math.Pow(0.01, dt / 0.307);
+        if (Math.Abs(_highScoreLerp - _highScore) < 1f) _highScoreLerp = _highScore;
+        _highScoreLerp = (int)_highScoreLerp;
+        // LevelTitle.update: y = smoothLerpPrecision(y, targetY, elapsed, 0.451); flashing at 20 fps
+        float k = (float)Math.Pow(0.01, dt / 0.451);
+        for (int i = 0; i < _weeks.Count; i++) _titleY[i] = _titleTargetY[i] + (_titleY[i] - _titleTargetY[i]) * k;
+        if (_flashing) { _flashTick += dt; if (_flashTick >= 1f / 20f) { _flashTick %= 1f / 20f; _flashCyan = !_flashCyan; } }
+        if (_bgTweenT >= 0f)
         {
-            // Block confirm on locked weeks (original: plays locked sound, shows lock icon)
-            if (_weeks[_selectedIndex].Locked)
-            {
-                Audio.PlaySound("scrollMenu");
-            }
-            else
-            {
-                Audio.PlaySound("confirmMenu");
-                _confirmed = true;
-                _confirmTimer = 1f;
-            }
+            _bgTweenT += dt;
+            float t = Math.Min(1f, _bgTweenT / 0.9f), e = 1f - (float)Math.Pow(1f - t, 4);   // quartOut
+            _bgColor = Color.Lerp(_bgFrom, _bgTo, e);
+            if (t >= 1f) _bgTweenT = -1f;
         }
-        if (Input.BackPressed)    { Audio.PlaySound("cancelMenu"); Game.Scenes.ChangeScene(new MainMenuScene()); }
-    }
+        if (_diffTweenT < 1f) _diffTweenT += dt;
+        UpdateProps(dt);
 
-    // ———————————————————————————————————
-    //  DRAWING — matches original FNF StoryMenuState Z-order:
-    //  1. yellowBG  2. grpWeekCharacters  3. blackBarTop
-    //  4. grpWeekText (ON TOP)  5. arrows+difficulty  6. scoreText+weekTitle  7. tracklist
-    // ———————————————————————————————————
-    public override void Draw(SpriteBatch sb)
-    {
-        sb.Begin(samplerState: SamplerState.PointClamp, blendState: BlendState.NonPremultiplied);
-
-        // Full-screen black background (original FNF base game)
-        sb.Draw(Assets.Pixel, new Rectangle(0, 0, FNFGame.SCREEN_WIDTH, FNFGame.SCREEN_HEIGHT), Color.Black);
-
-        if (_weeks.Count == 0)
+        if (_confirmed)
         {
-            var noWeeksFont = Assets.GetFont(24);
-            if (noWeeksFont != null)
-                noWeeksFont.DrawText(sb, "No weeks found. Check your content directory.",
-                    new Vector2(FNFGame.SCREEN_WIDTH / 2 - 260, FNFGame.SCREEN_HEIGHT / 2 - 12), Color.Gray);
-            sb.End();
+            _confirmTimer -= dt;
+            if (_confirmTimer <= 0 && _fadeT < 0f) _fadeT = 0f;          // FlxTimer(1) -> camera.fade(BLACK, 0.2)
+            if (_fadeT >= 0f)
+            {
+                _fadeT += dt;
+                if (_fadeT >= 0.2f && _fadeT < 10f)
+                {
+                    _fadeT = 10f;
+                    var w = _weeks[_selectedIndex];
+                    if (w.Songs.Count > 0)
+                    {
+                        Audio.StopMusic(); PlayScene.ResetStoryCampaign(w.Name); // StoryMenuState: talliesLevel reset + campaignTitle
+                        Game.Scenes.ChangeScene(new PlayScene(PsychStoryParams(w) ?? PlayStateParams.ForStoryMode(w.Songs[0], CurDiff, w.Songs, 0, w.Id, 0)));
+                    }
+                }
+            }
             return;
         }
 
+        if (Input.UpPressed) { ChangeLevel(-1); ChangeDifficulty(0); }
+        if (Input.DownPressed) { ChangeLevel(1); ChangeDifficulty(0); }
+        if (Input.ScrollDelta != 0) ChangeLevel(Input.ScrollDelta > 0 ? -1 : 1);
+        if (Input.RightPressed) ChangeDifficulty(1);
+        if (Input.LeftPressed) ChangeDifficulty(-1);
+
+        if (Input.ConfirmPressed)
+        {
+            if (_weeks[_selectedIndex].Locked) Audio.PlaySound("cancelMenu");
+            else
+            {
+                Audio.PlaySound("confirmMenu");
+                Input.Rumble(0.4f, 0.15f);
+                _confirmed = true; _confirmTimer = 1f; _flashing = true; PropsConfirm();
+            }
+        }
+        if (Input.BackPressed && !_confirmed) { Audio.PlaySound("cancelMenu"); Game.Scenes.ChangeScene(new MainMenuScene()); }
+    }
+
+    public override void Draw(SpriteBatch sb)
+    {
+        if (!_inited && _weeks.Count > 0) InitState();
+        sb.Begin(samplerState: SamplerState.LinearClamp, blendState: BlendState.NonPremultiplied);
+        sb.Draw(Assets.Pixel, new Rectangle(0, 0, FNFGame.SCREEN_WIDTH, FNFGame.SCREEN_HEIGHT), Color.Black);   // bgColor
+        if (_weeks.Count == 0) { sb.End(); return; }
         var cw = _weeks[_selectedIndex];
 
-        // 1) Yellow/colored banner background
-        sb.Draw(Assets.Pixel, new Rectangle(0, BANNER_TOP, FNFGame.SCREEN_WIDTH, BANNER_HEIGHT), cw.BackgroundColor);
-
-        // 2) Character props on banner
-        DrawProps(sb, cw);
-
-        // 3) Black top bar (covers anything that bleeds above banner)
-        sb.Draw(Assets.Pixel, new Rectangle(0, 0, FNFGame.SCREEN_WIDTH, BANNER_TOP), Color.Black);
-
-        // 4) Week items ON TOP of banner (original FNF: grpWeekText added after yellowBG)
-        //    Items have black backgrounds so they cover the banner cleanly.
+        // zIndex 0: tracklistText, arrows, difficultySprite (added without zIndex)
+        if (cw.IsPsych) PsychDrawLower(sb, cw); else { DrawTrackList(sb, cw); DrawDifficulty(sb); }
+        // zIndex 15: levelTitles
         DrawWeekTitles(sb);
-
-        // 5) Difficulty arrows + sprite (on top of week items)
-        DrawDifficulty(sb);
-
-        // 6) Score text + week title (on top of everything in the top bar)
-        var tf = Assets.GetFont(32);
-        if (tf != null)
-        {
-            int weekScore = HighscoreManager.GetWeekScore(cw.Id, CurrentDifficulties[_difficultyIndex]);
-            tf.DrawText(sb, $"WEEK SCORE:{weekScore}", new Vector2(10, 10), Color.White);
-            tf.DrawText(sb, cw.Name.ToUpper(), new Vector2(FNFGame.SCREEN_WIDTH * 0.7f, 10), Color.White * 0.7f);
-        }
-
-        // Controller button prompts (bottom-right, shown when gamepad connected)
-        if (Input.GamePadConnected && !_confirmed)
-        {
-            int promptSize = 40;
-            int promptY = FNFGame.SCREEN_HEIGHT - 54;
-            var hintFont = Assets.GetFont(18);
-
-            int selectLabelW = hintFont != null ? (int)hintFont.MeasureString("Select").X : 40;
-            int backLabelW = hintFont != null ? (int)hintFont.MeasureString("Back").X : 30;
-            int gap = 8;
-            int sectionGap = 28;
-            int totalW = promptSize + gap + selectLabelW + sectionGap + promptSize + gap + backLabelW;
-            int px = FNFGame.SCREEN_WIDTH - totalW - 24;
-
-            // Confirm: circle + label
-            Assets.DrawButtonPrompt(sb, Input.ConfirmButton, px, promptY, promptSize, 1f);
-            if (hintFont != null)
-                hintFont.DrawText(sb, "Select", new Vector2(px + promptSize + gap, promptY + (promptSize - 18) / 2), Color.White * 0.95f);
-
-            // Cancel: circle + label
-            int cancelX = px + promptSize + gap + selectLabelW + sectionGap;
-            Assets.DrawButtonPrompt(sb, Input.CancelButton, cancelX, promptY, promptSize, 1f);
-            if (hintFont != null)
-                hintFont.DrawText(sb, "Back", new Vector2(cancelX + promptSize + gap, promptY + (promptSize - 18) / 2), Color.White * 0.95f);
-        }
-
-        // 7) Track list (bottom-left, on top of week items like original)
-        DrawTrackList(sb, cw);
-
-        // 8) Confirm flash overlay
-        if (_confirmed)
-        {
-            float bannerFlash = ((int)(_confirmTimer * 10) % 2 == 0) ? 0.35f : 0f;
-            sb.Draw(Assets.Pixel, new Rectangle(0, BANNER_TOP, FNFGame.SCREEN_WIDTH, BANNER_HEIGHT), Color.White * bannerFlash);
-        }
-
+        // zIndex 99: black (0,0, w, 400 + 56); zIndex 100: levelBackground (0, 56, w x 400, colour)
+        if (cw.IsPsych) PsychDrawBanner(sb, cw); else {
+        sb.Draw(Assets.Pixel, new Rectangle(0, 0, FNFGame.SCREEN_WIDTH, BANNER_HEIGHT + BANNER_TOP), Color.Black);
+        sb.Draw(Assets.Pixel, new Rectangle(0, BANNER_TOP, FNFGame.SCREEN_WIDTH, BANNER_HEIGHT), _bgColor); }
+        // zIndex 1000: props, scoreText, levelTitleText
+        if (cw.IsPsych) PsychDrawChars(sb); else DrawProps(sb, cw);
+        // scoreText FlxText(10, 10, 'LEVEL SCORE: n', VCR 32); levelTitleText VCR 32 RIGHT, alpha 0.7, x = w - (width + 10)
+        MenuUI.FlxText(sb, 32, $"{(cw.IsPsych ? "WEEK" : "LEVEL")} SCORE: {(int)Math.Round(_highScoreLerp)}", 10, 10, Color.White);
+        string title = cw.Name ?? "";
+        MenuUI.FlxText(sb, 32, title, FNFGame.SCREEN_WIDTH - (MenuUI.FlxTextWidth(32, title) + 10), 10, new Color(Color.White, 0.7f));
+        if (!_confirmed)
+            ButtonPrompts.DrawBar(sb, Assets, Input, new[] { ButtonPrompts.UpDown("WEEK"), ButtonPrompts.LeftRight("DIFFICULTY"), ButtonPrompts.Confirm("PLAY"), ButtonPrompts.Back("BACK") },
+                FNFGame.SCREEN_WIDTH - 16, FNFGame.SCREEN_HEIGHT - 40, 1f, 26, 0.85f);
+        if (_fadeT >= 0f) sb.Draw(Assets.Pixel, new Rectangle(0, 0, FNFGame.SCREEN_WIDTH, FNFGame.SCREEN_HEIGHT), new Color(Color.Black, Math.Min(1f, _fadeT / 0.2f)));
         sb.End();
     }
 
+    private const float TEXT_DY = 0f;
+
+    // ---- LevelProp (ui/story/LevelProp.hx, Level.buildProps) + Bopper dance logic -------------------------------
+    // x = offsets[0] + FlxG.width * 0.25 * index, y = offsets[1] (screen space), scale about the first frame's centre,
+    // animation offsets subtracted, flipX/alpha from the data. Bopper: dance() on every beat % danceEvery (default 1);
+    // dance steps alternate danceLeft/danceRight, otherwise 'idle' is replayed when finished; first dance() is paused
+    // until the first beat; playConfirm() = 'confirm' forced and nothing else may play afterwards.
+    private sealed class PropState { public string Anim; public float T; public bool Paused, HasDanced, Locked; }
+    private readonly Dictionary<string, PropState> _propState = new();
+    private int _lastBeat = -1;
+    private const float MENU_BPM = 102f;   // music/freakyMenu metadata (timeChanges bpm 102)
+
+    private PropState GetPropState(WeekData w, int i)
+    {
+        string key = w.Id + ":" + i;
+        if (!_propState.TryGetValue(key, out var st))
+        {
+            st = new PropState();
+            _propState[key] = st;
+            var pd = i < w.PropData.Count ? w.PropData[i] : null;
+            if (pd?.StartingAnimation is { Length: > 0 } sa && HasPropAnim(w.PropNames[i], sa)) { st.Anim = sa; st.T = 0; }
+            else { PropDance(w, i, st, true); st.Paused = true; }
+        }
+        return st;
+    }
+
+    private bool HasPropAnim(string pName, string anim) => _propAnimFrames.ContainsKey($"{pName}:{anim}");
+
+    private void PropDance(WeekData w, int i, PropState st, bool force = false)
+    {
+        if (st.Locked) return;
+        string p = w.PropNames[i];
+        if (HasPropAnim(p, "danceLeft") && HasPropAnim(p, "danceRight"))
+        {
+            st.Anim = st.HasDanced ? "danceRight" : "danceLeft"; st.HasDanced = !st.HasDanced; st.T = 0; st.Paused = false;
+        }
+        else
+        {
+            bool finished = st.Anim != "idle" || PropFinished(w, i, st);
+            if (force || finished) { st.Anim = "idle"; st.T = 0; }
+            st.Paused = false;
+        }
+    }
+
+    private List<SpriteFrame> PropFrames(string pName, string anim)
+    {
+        if (anim != null && _propAnimFrames.TryGetValue($"{pName}:{anim}", out var f)) return f;
+        return _propSheets.TryGetValue(pName, out var sh) && sh.Animations.TryGetValue(anim ?? "idle", out var g) ? g : null;
+    }
+
+    private LevelPropAnimJson PropAnimData(WeekData w, int i, string anim)
+        => i < w.PropData.Count ? w.PropData[i].Animations?.FirstOrDefault(a => a.Name == anim) : null;
+
+    private bool PropFinished(WeekData w, int i, PropState st)
+    {
+        var fr = PropFrames(w.PropNames[i], st.Anim);
+        var ad = PropAnimData(w, i, st.Anim);
+        if (fr == null || ad?.Looped == true) return false;
+        return (int)(st.T * (ad?.FrameRate ?? 24)) >= fr.Count;
+    }
+
+    private void UpdateProps(float dt)
+    {
+        PsychUpdate(dt);
+        var w = _weeks[_selectedIndex];
+        double pos = Audio.MusicPosition;
+        int beat = (int)Math.Floor(pos * MENU_BPM / 60.0);
+        bool beatHit = beat != _lastBeat;
+        _lastBeat = beat;
+        for (int i = 0; i < w.PropNames.Count; i++)
+        {
+            var st = GetPropState(w, i);
+            if (!st.Paused) st.T += dt;
+            if (beatHit)
+            {
+                int every = i < w.PropData.Count && w.PropData[i].DanceEvery.HasValue ? w.PropData[i].DanceEvery.Value : 1;
+                if (every > 0 && beat % every == 0) PropDance(w, i, st);
+            }
+        }
+    }
+
+    private void PropsConfirm()
+    {
+        PsychConfirm();
+        var w = _weeks[_selectedIndex];
+        for (int i = 0; i < w.PropNames.Count; i++)
+        {
+            if (!HasPropAnim(w.PropNames[i], "confirm")) continue;
+            var st = GetPropState(w, i);
+            st.Anim = "confirm"; st.T = 0; st.Paused = false; st.Locked = true;
+        }
+    }
+
     private void DrawProps(SpriteBatch sb, WeekData w)
+    {
+        for (int i = 0; i < w.PropNames.Count; i++)
+        {
+            string pName = w.PropNames[i];
+            if (!_propSheets.TryGetValue(pName, out var sheet)) continue;
+            var pd = i < w.PropData.Count ? w.PropData[i] : null;
+            var st = GetPropState(w, i);
+            var frames = PropFrames(pName, st.Anim) ?? PropFrames(pName, "idle") ?? sheet.Animations.Values.FirstOrDefault();
+            if (frames == null || frames.Count == 0) continue;
+            var ad = PropAnimData(w, i, st.Anim);
+            int fi = (int)(st.T * (ad?.FrameRate ?? 24));
+            fi = ad?.Looped == true ? fi % frames.Count : Math.Min(fi, frames.Count - 1);
+            var frame = frames[fi];
+            // FlxSprite origin = first atlas frame's size / 2 (set when the frames were assigned)
+            var first = sheet.Frames.Count > 0 ? sheet.Frames.Values.First() : frames[0];
+            float fw0 = first.FrameWidth > 0 ? first.FrameWidth : first.SourceRect.Width;
+            float fh0 = first.FrameHeight > 0 ? first.FrameHeight : first.SourceRect.Height;
+            float scale = pd != null && pd.Scale > 0 ? pd.Scale : 1f;
+            float ox = pd?.Offsets?.Count >= 2 ? pd.Offsets[0] : 0, oy = pd?.Offsets?.Count >= 2 ? pd.Offsets[1] : 0;
+            float ax = ad?.Offsets?.Count >= 2 ? ad.Offsets[0] : 0, ay = ad?.Offsets?.Count >= 2 ? ad.Offsets[1] : 0;
+            float x = ox + FNFGame.SCREEN_WIDTH * 0.25f * i, y = oy;
+            bool flip = pd?.FlipX == true;
+            // flixel: screen = x - offset + origin - origin*scale + frameOffset*scale (flipX mirrors the frame offset)
+            float fw = frame.FrameWidth > 0 ? frame.FrameWidth : frame.SourceRect.Width;
+            float offX = frame.Offset.X;
+            if (flip) offX = fw - (frame.Rotated ? frame.SourceRect.Height : frame.SourceRect.Width) - offX;
+            float bx = x - ax + fw0 / 2f * (1f - scale), by = y - ay + fh0 / 2f * (1f - scale);
+            var col = new Color(Color.White, pd?.Alpha ?? 1f);
+            var tex = frame.Texture ?? sheet.Texture;
+            if (frame.Rotated)
+                sb.Draw(tex, new Vector2(bx + offX * scale, by + frame.Offset.Y * scale), frame.SourceRect, col, -MathF.PI / 2f,
+                    new Vector2(frame.SourceRect.Width, 0), scale, flip ? SpriteEffects.FlipVertically : SpriteEffects.None, 0f);
+            else
+                sb.Draw(tex, new Vector2(bx + offX * scale, by + frame.Offset.Y * scale), frame.SourceRect, col, 0f, Vector2.Zero, scale,
+                    flip ? SpriteEffects.FlipHorizontally : SpriteEffects.None, 0f);
+        }
+    }
+
+    private void DrawPropsOld(SpriteBatch sb, WeekData w)
     {
         // Original FNF StoryMenuState positioning:
         // x = (FlxG.width * 0.25) * (1 + i) - 150 + offsets[0]
@@ -368,7 +530,7 @@ public class StoryModeScene : Scene
                 {
                     isDance = true;
                     // Alternate dance on beat (original: danceEvery beats)
-                    int interval = pd.DanceEvery > 0 ? pd.DanceEvery : 2;
+                    int interval = pd.DanceEvery > 0 ? pd.DanceEvery.Value : 2;
                     if (_danceBeat % interval == 0)
                     {
                         string key = $"{pName}:danceState";
@@ -466,8 +628,8 @@ public class StoryModeScene : Scene
 
             if (frame.Rotated)
             {
-                // Rotated Sparrow frames: stored 90° clockwise in atlas.
-                // Draw with -90° rotation, origin at (sourceWidth, 0) to unrotate.
+                // Rotated Sparrow frames: stored 90? clockwise in atlas.
+                // Draw with -90? rotation, origin at (sourceWidth, 0) to unrotate.
                 Vector2 offset = frame.Offset;
                 bool wantFlipH = (effects & SpriteEffects.FlipHorizontally) != 0;
                 if (wantFlipH && frame.FrameWidth > 0)
@@ -563,129 +725,59 @@ public class StoryModeScene : Scene
 
     private void DrawWeekTitles(SpriteBatch sb)
     {
-        // Original FNF MenuItem.update():
-        // y = (targetY * 120) + 480 + (FlxG.height * 0.10)
-        // At 720p: base = 480 + 72 = 552
-        int topY = 480 + (int)(FNFGame.SCREEN_HEIGHT * 0.10f);
-        int rowH = 120;
-
-        int bannerBottom = BANNER_TOP + BANNER_HEIGHT;
-
+        // LevelTitle: title graphic screenCenter(X) at the lerped y, alpha 1 selected / 0.6 others; flashing
+        // selected title toggles colour WHITE <-> 0xFF33FFFF at 20 fps after confirm.
         for (int i = 0; i < _weeks.Count; i++)
         {
-            float relPos = i - _scrollLerp;
-            int y = topY + (int)(relPos * rowH);
-            // Cull items fully off-screen or fully inside the banner area
-            if (y + rowH < 0 || y > FNFGame.SCREEN_HEIGHT) continue;
-            // Skip items entirely above (inside) the banner — they scroll behind it
-            if (y + rowH <= bannerBottom) continue;
-
+            float y = _titleY[i];
+            if (y > FNFGame.SCREEN_HEIGHT || y < -200) continue;
             bool sel = i == _selectedIndex;
-            float alpha = sel ? 1f : 0.6f;
-
-            // On confirm: non-selected items disappear, selected flickers (original behavior)
-            if (_confirmed)
+            var col = (sel && _flashing && _flashCyan) ? new Color(0x33, 0xFF, 0xFF) : Color.White;
+            col = new Color(col, sel ? 1f : 0.6f);
+            if (_weekBanners.TryGetValue(_weeks[i].Id, out var banner) && banner != null && banner != Assets.Pixel)
             {
-                if (sel)
-                    alpha = ((int)(_confirmTimer * 10) % 2 == 0) ? 1f : 0.6f;
-                else
-                    alpha = 0f;
+                float x = (int)((FNFGame.SCREEN_WIDTH - banner.Width) / 2f);
+                sb.Draw(banner, new Vector2(x, (float)Math.Floor(y)), col);
             }
+            else if (!_weeks[i].IsPsych) AtlasText.Bold?.DrawCentered(sb, _weeks[i].Name, y, col.A / 255f, _time);
+        }
+    }
 
-            // Per-item background — only drawn below the yellow banner.
-            // Original FNF: items are transparent PNGs over a full-screen black bg.
-            // The yellow banner shows through when items scroll into it.
-            if (y + rowH > bannerBottom)
+    private string SongDisplayName(string id)
+    {
+        if (_songNames.TryGetValue(id, out var n)) return n;
+        n = FormatSongName(id);
+        try
+        {
+            string meta = Assets.ResolvePath($"songs/{id}/charts/meta.json");
+            if (meta != null && global::FNF_MonoGame.Engine.FsCI.FileExists(meta))
             {
-                int blackY = Math.Max(y, bannerBottom);
-                int blackH = y + rowH - blackY;
-                sb.Draw(Assets.Pixel, new Rectangle(0, blackY, FNFGame.SCREEN_WIDTH, blackH),
-                    Color.Black);
-            }
-
-            // Original FNF: selected item has a flashingBG that flashes white on confirm
-            if (_confirmed && sel)
-            {
-                int flashY = Math.Max(y, bannerBottom);
-                int flashH = y + rowH - flashY;
-                if (flashH > 0)
-                {
-                    float flash = ((int)(_confirmTimer * 10) % 2 == 0) ? 0.3f : 0f;
-                    sb.Draw(Assets.Pixel, new Rectangle(0, flashY, FNFGame.SCREEN_WIDTH, flashH),
-                        Color.Cyan * flash);
-                }
-            }
-
-            // Only draw week title image/text below the banner bottom edge.
-            // Items that partially overlap the banner are clipped by not drawing
-            // the image when its center is above the banner — matches original FNF
-            // where items scroll behind the yellow banner + character props.
-            int imgCenterY = y + rowH / 2;
-            if (imgCenterY < bannerBottom) continue;
-
-            if (_weekBanners.TryGetValue(_weeks[i].Id, out var banner) && banner != Assets.Pixel)
-            {
-                int bw = banner.Width;
-                int bh = banner.Height;
-                // Center horizontally on screen (original FNF: screenCenter(X))
-                int itemX = (FNFGame.SCREEN_WIDTH - bw) / 2;
-                int imgY = y + (rowH - bh) / 2;
-                sb.Draw(banner, new Rectangle(itemX, imgY, bw, bh), Color.White * alpha);
-
-                if (_weeks[i].Locked && _lockTex != null && _lockTex != Assets.Pixel)
-                {
-                    int lockSize = 50;
-                    int lx = itemX + bw - lockSize - 8;
-                    sb.Draw(_lockTex, new Rectangle(lx, imgY + 4, lockSize, lockSize), Color.White * alpha);
-                }
-            }
-            else
-            {
-                // Fallback text rendering centered
-                var alphabetFont = AlphabetFont.Bold;
-                if (alphabetFont != null)
-                {
-                    float sc = sel ? 0.55f : 0.45f;
-                    alphabetFont.DrawStringCentered(sb, _weeks[i].Name, y + rowH / 2 - 20, Color.White * alpha, sc);
-                }
-                else
-                {
-                    var f = Assets.GetFont(sel ? 28 : 22);
-                    if (f != null)
-                    {
-                        var s = f.MeasureString(_weeks[i].Name);
-                        f.DrawText(sb, _weeks[i].Name, new Vector2((FNFGame.SCREEN_WIDTH - s.X) / 2, y + rowH / 2 - s.Y / 2), Color.White * alpha);
-                    }
-                }
+                var jo = Newtonsoft.Json.Linq.JObject.Parse(global::FNF_MonoGame.Engine.FsCI.ReadAllText(meta));
+                n = (string)jo["songName"] ?? n;
             }
         }
+        catch { }
+        _songNames[id] = n;
+        return n;
     }
 
     private void DrawTrackList(SpriteBatch sb, WeekData w)
     {
-        // Original FNF: single FlxText, vcr.ttf size 32, center-aligned,
-        // ALL text same pink/purple color (0xE557E8), UPPERCASE.
-        // y = yellowBG.x(0) + yellowBG.height(400) + 100 = 500
-        // Content: "TRACKS\n\nSONGNAME\nSONGNAME" (double newline after header)
-        int cx = (int)(FNFGame.SCREEN_WIDTH * 0.05f) + 80;
-        int y = BANNER_HEIGHT + 100;
-        Color trackColor = new Color(0xE5, 0x57, 0xE8);
-
-        var font = Assets.GetFont(32);
-        if (font != null)
-        {
-            var ts = font.MeasureString("TRACKS");
-            font.DrawText(sb, "TRACKS", new Vector2(cx - ts.X / 2, y), trackColor);
-
-            // Double newline gap then song names (all same color + size)
-            for (int i = 0; i < w.Songs.Count; i++)
-            {
-                string n = FormatSongName(w.Songs[i]).ToUpper();
-                var ns = font.MeasureString(n);
-                font.DrawText(sb, n, new Vector2(cx - ns.X / 2, y + 70 + i * 38), trackColor);
-            }
+        // tracklistText: FlxText(0, 400 + 100, 0, "TRACKS\n\n" + songNames.join("\n"), VCR 32), CENTER, colour 0xFFE55777,
+        // screenCenter(X) then x -= FlxG.width * 0.33.
+        var lines = new List<string> { "TRACKS", "" };
+        foreach (var s in w.Songs) lines.Add(SongDisplayName(s));
+        float maxW = 0; foreach (var l in lines) maxW = Math.Max(maxW, MenuUI.FlxTextWidth(32, l) - 4f);
+        float x0 = (FNFGame.SCREEN_WIDTH - (maxW + 4f)) / 2f - FNFGame.SCREEN_WIDTH * 0.33f;
+        var col = new Color(0xE5, 0x57, 0x77);
+        float y = BANNER_HEIGHT + 100;
+        foreach (var l in lines)
+        {   // CENTER alignment inside the text field (OpenFL rounds the line offset)
+            MenuUI.FlxText(sb, 32, l, x0 + (float)Math.Floor((maxW - (MenuUI.FlxTextWidth(32, l) - 4f)) / 2f), y, col);
+            y += MenuUI.FlxTextLineHeight(32);
         }
     }
+    private const float TRACK_LINE_H = 32f;
 
     private string FormatSongName(string n)
     {
@@ -693,81 +785,60 @@ public class StoryModeScene : Scene
         return string.Join(" ", w.Select(x => x.Length > 0 ? char.ToUpper(x[0]) + (x.Length > 1 ? x[1..] : "") : ""));
     }
 
+    private SpriteFrame DiffFrame(string diff, out Texture2D tex)
+    {
+        tex = null;
+        if (!_diffAtlases.TryGetValue(diff, out var sh))
+        {
+            sh = Assets.ResolvePath($"menus/story_menu/difficulties/{diff}.xml") != null ? SpriteSheet.Load(Game, $"menus/story_menu/difficulties/{diff}") : null;
+            _diffAtlases[diff] = sh;
+        }
+        if (sh != null)
+        {
+            var fr = sh.GetAnimation("idle");
+            if (fr != null && fr.Count > 0)
+            {
+                var f = fr[HighscoreManager.Data.FlashingLights ? (int)(_time * 24f) % fr.Count : 0];
+                tex = f.Texture ?? sh.Texture; return f;
+            }
+        }
+        return null;
+    }
+
     private void DrawDifficulty(SpriteBatch sb)
     {
-        // Difficulty arrows to the RIGHT of the centered week banner.
-        // Original FNF: leftArrow.x = weekItem.x + weekItem.width + 10
-        int weekBannerWidth = 400;
-        if (_weeks.Count > 0 && _weekBanners.TryGetValue(_weeks[_selectedIndex].Id, out var selBanner) && selBanner != Assets.Pixel)
-            weekBannerWidth = selBanner.Width;
-        int weekRightEdge = (FNFGame.SCREEN_WIDTH + weekBannerWidth) / 2;
+        // leftDifficultyArrow (FlxG.width - 410, 480) 'leftIdle0'/'leftConfirm0' (press while UI_LEFT held),
+        // rightDifficultyArrow (FlxG.width - 35, 480); difficultySprite x = left.x + left.width + 10 + (normal.w - w)/2,
+        // y tweened from left.y - 15 to left.y + 10 - (h - normal.h)/2 and alpha 0 -> 1 in 0.07 s (linear).
+        if (_arrowsSheet == null) return;
+        var lf = _arrowsSheet.GetAnimation(Input.LeftHeld && !_confirmed ? "leftConfirm" : "leftIdle") ?? _arrowsSheet.GetAnimation("leftIdle");
+        var rf = _arrowsSheet.GetAnimation(Input.RightHeld && !_confirmed ? "rightConfirm" : "rightIdle") ?? _arrowsSheet.GetAnimation("rightIdle");
+        var li = _arrowsSheet.GetAnimation("leftIdle");
+        float lx = FNFGame.SCREEN_WIDTH - 410, ly = 480, rx = FNFGame.SCREEN_WIDTH - 35;
+        int lw = li != null && li.Count > 0 ? (li[0].FrameWidth > 0 ? li[0].FrameWidth : li[0].SourceRect.Width) : 49;
+        void DrawF(SpriteFrame f, float x, float y) { if (f != null) sb.Draw(f.Texture ?? _arrowsSheet.Texture, new Vector2(x + f.Offset.X, y + f.Offset.Y), f.SourceRect, Color.White); }
+        if (lf != null && lf.Count > 0) DrawF(lf[0], lx, ly);
+        if (rf != null && rf.Count > 0) DrawF(rf[0], rx, ly);
 
-        string diff = CurrentDifficulties[_difficultyIndex];
-        // Y follows selected week item
-        int topY = 480 + (int)(FNFGame.SCREEN_HEIGHT * 0.10f);
-        float selRelPos = _selectedIndex - _scrollLerp;
-        int baseY = topY + (int)(selRelPos * 120) + 10;
-
-        if (_arrowsSheet != null)
+        string diff = _diffShown;
+        var nTex = _diffTextures.TryGetValue("normal", out var nt) ? nt : null;
+        float nW = nTex?.Width ?? 0, nH = nTex?.Height ?? 0;
+        var af = DiffFrame(diff, out var atex);
+        Texture2D tex = null; float dw, dh;
+        if (af != null) { dw = af.FrameWidth > 0 ? af.FrameWidth : af.SourceRect.Width; dh = af.FrameHeight > 0 ? af.FrameHeight : af.SourceRect.Height; }
+        else
         {
-            string leftAnim = _leftArrowTimer > 0 ? "leftConfirm" : "leftIdle";
-            string rightAnim = _rightArrowTimer > 0 ? "rightConfirm" : "rightIdle";
-            var leftFrames = _arrowsSheet.GetAnimation(leftAnim) ?? _arrowsSheet.GetAnimation("leftIdle");
-            var rightFrames = _arrowsSheet.GetAnimation(rightAnim) ?? _arrowsSheet.GetAnimation("rightIdle");
-
-            // Scale arrows + difficulty to 0.9x — newer engine assets are slightly larger
-            float uiScale = 0.9f;
-            int laW = (int)((leftFrames?[0]?.SourceRect.Width ?? 48) * uiScale);
-            int laH = (int)((leftFrames?[0]?.SourceRect.Height ?? 85) * uiScale);
-            int raW = (int)((rightFrames?[0]?.SourceRect.Width ?? 47) * uiScale);
-            int raH = (int)((rightFrames?[0]?.SourceRect.Height ?? 85) * uiScale);
-
-            // Difficulty sprite image
-            bool hasDiffImg = _diffTextures.TryGetValue(diff, out var diffTex)
-                           && diffTex != null && diffTex != Assets.Pixel;
-            // Scale difficulty image: newer engine images are ~2x the original base game size
-            int diffW = hasDiffImg ? (int)(diffTex.Width * 0.8f) : 120;
-            int diffH = hasDiffImg ? (int)(diffTex.Height * 0.8f) : 48;
-
-            int gap = 10;
-            int totalDiffW = laW + gap + diffW + gap + raW;
-
-            // Center the difficulty section in the space to the right of the banner
-            int availableRight = FNFGame.SCREEN_WIDTH - weekRightEdge;
-            int laX = weekRightEdge + (availableRight - totalDiffW) / 2;
-            // Clamp so it doesn't overlap the banner or go off screen
-            laX = Math.Max(weekRightEdge + 5, Math.Min(laX, FNFGame.SCREEN_WIDTH - totalDiffW - 5));
-
-            // Left arrow
-            if (leftFrames != null && leftFrames.Count > 0)
-                sb.Draw(_arrowsSheet.Texture, new Rectangle(laX, baseY, laW, laH),
-                    leftFrames[0].SourceRect, Color.White);
-
-            // Difficulty image/text centered vertically with arrows
-            int diffX = laX + laW + gap;
-            int diffY = baseY + (laH - diffH) / 2;
-            if (hasDiffImg)
-            {
-                sb.Draw(diffTex, new Rectangle(diffX, diffY, diffW, diffH), Color.White);
-            }
-            else
-            {
-                var diffFont = Assets.GetFont(20);
-                if (diffFont != null)
-                {
-                    string diffText = diff.ToUpper();
-                    var ts = diffFont.MeasureString(diffText);
-                    diffFont.DrawText(sb, diffText, new Vector2(diffX, baseY + (laH - ts.Y) / 2), Color.White);
-                    diffW = (int)ts.X;
-                }
-            }
-
-            // Right arrow
-            int raX = diffX + diffW + gap;
-            if (rightFrames != null && rightFrames.Count > 0)
-                sb.Draw(_arrowsSheet.Texture, new Rectangle(raX, baseY, raW, raH),
-                    rightFrames[0].SourceRect, Color.White);
+            if (!_diffTextures.TryGetValue(diff, out tex) || tex == null || tex == Assets.Pixel) tex = Assets.LoadTexture($"menus/story_menu/difficulties/{diff}.png");
+            if (tex == null || tex == Assets.Pixel) return;
+            dw = tex.Width; dh = tex.Height;
         }
+        float t = Math.Min(1f, _diffTweenT / 0.07f);
+        float dx = lx + lw + 10 + (nW - dw) / 2f;
+        float y0 = ly - 15, y1 = ly + 10 - (dh - nH) / 2f;
+        float dy = y0 + (y1 - y0) * t;
+        var col = new Color(Color.White, t);
+        if (af != null) sb.Draw(atex, new Vector2(dx + af.Offset.X, dy + af.Offset.Y), af.SourceRect, col);
+        else sb.Draw(tex, new Vector2(dx, dy), col);
     }
 }
 
@@ -788,7 +859,11 @@ public class LevelPropJson
     [JsonProperty("scale")] public float Scale { get; set; } = 1f;
     [JsonProperty("offsets")] public List<float> Offsets { get; set; }
     [JsonProperty("animations")] public List<LevelPropAnimJson> Animations { get; set; }
-    [JsonProperty("danceEvery")] public int DanceEvery { get; set; }
+    [JsonProperty("danceEvery")] public int? DanceEvery { get; set; }
+    [JsonProperty("startingAnimation")] public string StartingAnimation { get; set; }
+    [JsonProperty("flipX")] public bool FlipX { get; set; }
+    [JsonProperty("isPixel")] public bool IsPixel { get; set; }
+    [JsonProperty("alpha")] public float Alpha { get; set; } = 1f;
 }
 
 public class LevelPropAnimJson
@@ -797,9 +872,11 @@ public class LevelPropAnimJson
     [JsonProperty("prefix")] public string Prefix { get; set; }
     [JsonProperty("frameRate")] public int FrameRate { get; set; } = 24;
     [JsonProperty("frameIndices")] public int[] FrameIndices { get; set; }
+    [JsonProperty("offsets")] public List<float> Offsets { get; set; }
+    [JsonProperty("looped")] public bool Looped { get; set; }
 }
 
-public class WeekData
+public partial class WeekData
 {
     public string Id { get; set; }
     public string Name { get; set; }
@@ -810,3 +887,4 @@ public class WeekData
     public string[] Difficulties { get; set; } = { "easy", "normal", "hard" };
     public bool Locked { get; set; }
 }
+

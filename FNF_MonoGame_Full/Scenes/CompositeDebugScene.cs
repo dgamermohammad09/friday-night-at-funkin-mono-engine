@@ -107,25 +107,25 @@ public class CompositeDebugScene : Scene
     {
         _sheetPaths.Clear();
         string root = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Content");
-        if (!System.IO.Directory.Exists(root)) return;
+        if (!global::FNF_MonoGame.Engine.FsCI.DirectoryExists(root)) return;
 
         // Find AnimateAtlas folders (spritemap1.json)
-        foreach (var json in System.IO.Directory.EnumerateFiles(root, "spritemap1.json", System.IO.SearchOption.AllDirectories))
+        foreach (var json in global::FNF_MonoGame.Engine.FsCI.EnumerateFiles(root, "spritemap1.json", System.IO.SearchOption.AllDirectories))
         {
             string folder = System.IO.Path.GetDirectoryName(json);
             string rel = System.IO.Path.GetRelativePath(root, folder).Replace('\\', '/');
             // Only include folders that also have Animation.json (actual AnimateAtlas)
-            if (System.IO.File.Exists(System.IO.Path.Combine(folder, "Animation.json")))
+            if (global::FNF_MonoGame.Engine.FsCI.FileExists(System.IO.Path.Combine(folder, "Animation.json")))
                 _sheetPaths.Add(rel);
         }
 
         // Also include standard spritesheets with composites
-        foreach (var png in System.IO.Directory.EnumerateFiles(root, "*.png", System.IO.SearchOption.AllDirectories))
+        foreach (var png in global::FNF_MonoGame.Engine.FsCI.EnumerateFiles(root, "*.png", System.IO.SearchOption.AllDirectories))
         {
             string baseName = System.IO.Path.ChangeExtension(png, null);
             string rel = System.IO.Path.GetRelativePath(root, baseName).Replace('\\', '/');
             if (_sheetPaths.Contains(rel)) continue;
-            if (System.IO.File.Exists(baseName + ".xml") || System.IO.File.Exists(baseName + ".json"))
+            if (global::FNF_MonoGame.Engine.FsCI.FileExists(baseName + ".xml") || global::FNF_MonoGame.Engine.FsCI.FileExists(baseName + ".json"))
                 _sheetPaths.Add(rel);
         }
         _sheetPaths.Sort(StringComparer.OrdinalIgnoreCase);

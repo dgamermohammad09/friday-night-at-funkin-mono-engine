@@ -1,4 +1,5 @@
-﻿using Microsoft.Xna.Framework;
+using System;
+using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using Microsoft.Xna.Framework.Input;
 using FNF_MonoGame.Engine;
@@ -44,18 +45,18 @@ public class FreeplayEditorScene : Scene
 
         // Discover songs
         string root = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Content", "songs");
-        if (System.IO.Directory.Exists(root))
+        if (global::FNF_MonoGame.Engine.FsCI.DirectoryExists(root))
         {
-            foreach (var dir in System.IO.Directory.GetDirectories(root))
+            foreach (var dir in global::FNF_MonoGame.Engine.FsCI.GetDirectories(root))
             {
                 string name = System.IO.Path.GetFileName(dir);
                 string metaPath = System.IO.Path.Combine(dir, "charts", "meta.json");
                 string album = "vol1"; float bpm = 120; string[] diffs = { "easy", "normal", "hard" };
-                if (System.IO.File.Exists(metaPath))
+                if (global::FNF_MonoGame.Engine.FsCI.FileExists(metaPath))
                 {
                     try
                     {
-                        var meta = JObject.Parse(System.IO.File.ReadAllText(metaPath));
+                        var meta = JObject.Parse(global::FNF_MonoGame.Engine.FsCI.ReadAllText(metaPath));
                         album = meta["album"]?.ToString() ?? album;
                         var tc = meta["timeChanges"] as JArray;
                         if (tc != null && tc.Count > 0) bpm = (float)(tc[0]["bpm"] ?? 120);
@@ -198,7 +199,7 @@ public class FreeplayEditorScene : Scene
             EditorUI.PropertyRow(sb, px, fontSm, rx + 4, y, pw, "Song", s.Name, true); y += 18;
             EditorUI.PropertyRow(sb, px, fontSm, rx + 4, y, pw, "Album", s.Album ?? "?"); y += 18;
             EditorUI.PropertyRow(sb, px, fontSm, rx + 4, y, pw, "BPM", $"{s.BPM:0.#}"); y += 18;
-            EditorUI.PropertyRow(sb, px, fontSm, rx + 4, y, pw, "Difficulties", string.Join(", ", s.Difficulties ?? Array.Empty<string>())); y += 18;
+            EditorUI.PropertyRow(sb, px, fontSm, rx + 4, y, pw, "Difficulties", string.Join(", ", s.Difficulties ?? System.Array.Empty<string>())); y += 18;
 
             sb.Draw(px, new Rectangle(rx + 6, y, pw - 8, 1), EditorUI.Border); y += 8;
             int score = HighscoreManager.GetScore(s.Name, "normal");

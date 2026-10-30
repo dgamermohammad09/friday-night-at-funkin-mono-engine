@@ -1,0 +1,50 @@
+<Project>
+  <!-- Source set shared by the cross-platform projects (DesktopGL = Linux/macOS/Windows-GL, Android).
+       Same .cs files as FNF_MonoGame_Full/FNF_MonoGame.csproj (Windows DX) - nothing is copied.
+       Platform specific code is selected with #if:  WINDOWSDX (FNF_MonoGame.csproj), DESKTOPGL, ANDROID, XBOX_UWP. -->
+  <PropertyGroup>
+    <FnfSrc>$(MSBuildThisFileDirectory)..\..\FNF_MonoGame_Full\</FnfSrc>
+    <RootNamespace>FNF_MonoGame</RootNamespace>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <LangVersion>latest</LangVersion>
+    <NoWarn>$(NoWarn);CS0162;CS0168;CS0169;CS0219;CS0414;CS0649;CS0618;CS8632;CA1416;CS0108;CS0114;CS1998;CS4014;CS0067</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="$(FnfSrc)**\*.cs"
+             Exclude="$(FnfSrc)Xbox\**;$(FnfSrc)obj\**;$(FnfSrc)bin\**;$(FnfSrc)Content\**;$(FnfSrc)Engine\PsychEngine\Editors\**;$(FnfSrc)Engine\PsychEngine\Stages\**;$(FnfSrc)Engine\PsychEngine\States\**;$(FnfSrc)Engine\PsychEngine\Options\**"
+             Link="%(RecursiveDir)%(Filename)%(Extension)" />
+    <Compile Include="$(MSBuildThisFileDirectory)*.cs" Link="Platforms\Shared\%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="FontStashSharp.MonoGame" Version="1.3.7" />
+    <!-- NAudio.Vorbis pulls only NAudio.Core (managed decoders, no WinMM/WASAPI); output goes through MonoGame audio. -->
+    <PackageReference Include="NAudio.Vorbis" Version="1.5.0" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <PackageReference Include="DiscordRichPresence" Version="1.2.1.24" />
+    <PackageReference Include="MoonSharp" Version="2.0.0" />
+    <!-- GameBanana mod browser: 7z / RAR archives (managed, same version as the PC / Xbox projects) -->
+    <PackageReference Include="SharpCompress" Version="0.32.2" />
+  </ItemGroup>
+
+  <!-- MonoGame DesktopGL/Android embed their own public NVorbis types; the NVorbis.dll package (needed by NAudio.Vorbis)
+       gets an extern alias so engine code `NVorbis.VorbisReader` binds to one type. -->
+  <Target Name="FnfAliasNVorbis" AfterTargets="ResolveAssemblyReferences" BeforeTargets="CoreCompile" Condition="'$(FnfAliasNVorbis)' == 'true'">
+    <ItemGroup>
+      <ReferencePath Condition="'%(Filename)' == 'NVorbis'">
+        <Aliases>nvorbispkg</Aliases>
+      </ReferencePath>
+    </ItemGroup>
+  </Target>
+
+  <ItemGroup>
+    <ProjectReference Include="$(MSBuildThisFileDirectory)..\..\HScriptIris_CS\HScriptIris.csproj" Aliases="IRIS" />
+    <Reference Include="HaxeScriptRuntime">
+      <HintPath>$(FnfSrc)HaxeScriptRuntime.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+</Project>

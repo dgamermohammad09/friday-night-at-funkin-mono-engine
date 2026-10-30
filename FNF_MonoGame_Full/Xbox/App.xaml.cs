@@ -14,6 +14,10 @@ sealed partial class App : Application
     public App()
     {
         InitializeComponent();
+        // Xbox: XAML apps default to "mouse mode" (gamepad drives a pointer and A = left click).
+        // That made A click whatever menu row sat under the invisible cursor (e.g. MODS) instead of the
+        // highlighted one. Turn it off so the controller is read only as a gamepad.
+        RequiresPointerMode = ApplicationRequiresPointerMode.WhenRequested;
         Suspending += OnSuspending;
         UnhandledException += OnUnhandledException;
     }
@@ -36,12 +40,15 @@ sealed partial class App : Application
     private void OnSuspending(object sender, SuspendingEventArgs e)
     {
         var deferral = e.SuspendingOperation.GetDeferral();
+        try { UwpLog.Flush(); } catch { }
         deferral.Complete();
     }
 
     private void OnUnhandledException(object sender, Windows.UI.Xaml.UnhandledExceptionEventArgs e)
     {
         e.Handled = true;
+        try { FNF_MonoGame.Engine.CrashHandler.Report(e.Exception ?? new System.Exception(e.Message), "xaml-unhandled", XboxGame.Instance?.Scenes?.CurrentScene?.GetType().Name ?? "-"); } catch { }
+        try { UwpLog.Flush(); } catch { }
         try
         {
             var tb = new TextBlock

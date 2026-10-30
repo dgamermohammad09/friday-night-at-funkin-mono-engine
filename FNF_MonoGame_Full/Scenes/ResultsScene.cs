@@ -1,19 +1,17 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
+using Newtonsoft.Json.Linq;
 using FNF_MonoGame.Engine;
-using System.Linq;
 
 namespace FNF_MonoGame.Scenes;
 
 /// <summary>
 /// Scoring rank enum matching original FNF ScoringRank from Scoring.hx.
-/// Rank thresholds from Constants.hx:
-///   PERFECT_GOLD = all sicks (tallies.sick == tallies.totalNotes)
-///   PERFECT      = completion == 1.0
-///   EXCELLENT    = completion >= 0.90
-///   GREAT        = completion >= 0.80
-///   GOOD         = completion >= 0.60
-///   SHIT         = below 0.60
+///   PERFECT_GOLD = all sicks, PERFECT = completion == 1.0, EXCELLENT >= 0.90, GREAT >= 0.80, GOOD >= 0.60, SHIT below.
 /// </summary>
 public enum ScoringRank
 {
@@ -26,1987 +24,1279 @@ public enum ScoringRank
 }
 
 /// <summary>
-/// Results screen — faithful port of the original FNF ResultState.hx.
-///
-/// Sequence (all timings match original at 24fps frame references):
-///   - Gradient BG (0xFFFECC5C ? 0xFFFDC05C, 90°) + bgFlash overlay
-///   - Black top bar slides down at 3/24s over 7/24s (quartOut)
-///   - "RESULTS" sparrow anim at 6/24s (right side, x = width - 1480, y = -10)
-///   - Sound system sparrow anim at 8/24s (left side, x = -15, y = -180)
-///   - Ratings popin sparrow at 21/24s (x = -135, y = 135)
-///   - Score popin sparrow at 36/24s (x = -180, y = 515)
-///   - Score digits animate + tally counters start at 37/24s
-///     Each tally counter: visible at (0.3*index)+1.20s, tweens curNumber?target over 0.5s (quartOut)
-///   - Music starts at rank.getMusicDelay() (intro + loop)
-///   - Clear percent counter starts at 37/24s, tweens over 58/24s (quartOut)
-///     Starts from max(0, target-36), plays scrollMenu tick per increment
-///     On complete: confirmMenu sound, flash white 0.4s, then fade alpha over 0.5s
-///   - Character animations at rank.getBFDelay()
-///   - Rank text backdrop (FlxBackdrop) at rank.getFlashDelay()
-///     12 horizontal rows (alternating velocity ±7) + 1 vertical column (velocity -80)
-///     bgFlash alpha=1 ? fade over 14/24s
-///   - Small clear percent + difficulty + song name scroll in top bar after rank sequence
-///   - Highscore "NEW" at rank.getHighscoreDelay()
-///   - PAUSE/ACCEPT ? transition to FreeplayState
+/// Results screen: port of V-Slice 0.8.1 funkin.play.ResultState (+ ResultScore/ScoreNum, TallyCounter,
+/// ClearPercentCounter, BitmapUtil.createResultsBar, FlxBackdrop, the player data "results" animations of
+/// data/players/{bf,pico}.json and the results scripts). Desktop layout (gameNotchSize = gameCutoutSize = 0).
+/// Times are seconds since the state was created; every number below comes from the original source.
 /// </summary>
-public class ResultsScene : Scene
+public partial class ResultsScene : Scene
 {
-    // === Score data (matches ResultsStateParams.scoreData) ===
-    private readonly int _score;
-    private readonly int _maxCombo;
-    private readonly int _misses;
-    private readonly string _songName;
-    private readonly string _difficultyId;
-    private readonly bool _isNewHighscore;
-    private readonly int _tallySick;
-    private readonly int _tallyGood;
-    private readonly int _tallyBad;
-    private readonly int _tallyShit;
-    private readonly int _tallyMissed;
-    private readonly int _totalNotesHit;
-    private readonly int _totalNotes;
+    // ===================================================================== params
+    private readonly int _score, _maxCombo, _misses;
+    private readonly string _songName, _difficultyId;
+    private readonly bool _isNewHighscore, _isStoryMode;
+    private readonly int _tallySick, _tallyGood, _tallyBad, _tallyShit, _tallyMissed, _totalNotesHit, _totalNotes;
 
-    // === Computed ===
-    private ScoringRank _rank;
-    private int _clearPercentTarget;
+    /// <summary>Chart player character id (currentChart.characters.player), e.g. "bf", "pico-playable".</summary>
+    public string CharacterId { get; set; }
+    /// <summary>Dev hook alias of <see cref="CharacterId"/>.</summary>
+    public string DevCharacterId { get => CharacterId; set { if (value != null) CharacterId = value; } }
+    /// <summary>"Song by Artist" (or the campaign title in story mode).</summary>
+    public string Title { get; set; }
+    public bool IsPracticeMode { get; set; }
+    public bool IsBotPlayMode { get; set; }
+    /// <summary>ResultsParams.prevScoreData: rank saved BEFORE this play (PlayScene saves the score before the results,
+    /// so reading the save here returned the new rank and the Freeplay rank reveal never played).</summary>
+    public string PrevRankString; public bool HasPrevRank;
+    public float DevElapsed => _t;
+    public string DevInfo => $"flash={(_bgFlashVisible ? _bgFlashAlpha : -1f):F3} vertY={_rankVertY:F2} rowX0={_rankRowX[0]:F2} " + string.Join(" ", _chars.Where(c => c.atlas != null).Select(c => $"bounds=({c.atlas.A.BoundsMin.X:F3},{c.atlas.A.BoundsMin.Y:F3},{c.atlas.A.FrameW},{c.atlas.A.FrameH}) vis={c.atlas.Visible} anim={c.atlas.Name} f={c.atlas.Index}/{c.atlas.Frames?.Length} tl={c.atlas.TimelineFrame}/{c.atlas.A.FrameCount} fin={c.atlas.Finished} loop={c.atlas.Looped} paused={c.atlas.Paused}"));
+    private float _devLogT = -1f;
+    private static string DevSpr(Spr x) => x == null ? "null" : $"{(x.Visible ? x.Cur ?? "-" : "hid")}:{x.Frame}";
+    public string DevDump => System.FormattableString.Invariant($"t={_t:F3} flash={(_bgFlashVisible ? _bgFlashAlpha : -1f):F3} top={_topBarY:F1} row0={_rankRowX[0]:F3} row1={_rankRowX[1]:F3} vert={(_rankTextShown ? (_rankVertVisible ? 1 : 0) : -1)}:{_rankVertY:F2} song={_songX:F1},{_songY:F2} diff={_diffX:F1},{_diffY:F2} cps={_cpSmallCounter?.X:F1},{_cpSmallCounter?.Y:F2},{_cpSmallCounter?.Visible} cpb={(_cpBig == null ? "null" : $"{_cpBig.Cur}:{_cpBig.Alpha:F3}:{_cpBig.Removed}")} ss={DevSpr(_soundSystem)} res={DevSpr(_resultsAnim)} rat={DevSpr(_ratingsPopin)} sc={DevSpr(_scorePopin)} hs={DevSpr(_highscoreNew)} digits={string.Join(",", _scoreNums.Select(n => DevSpr(n.S)))} tallies={string.Join(",", _tallies.Select(tl => tl.Visible ? ((int)RoundCompat.AwayFromZero(tl.Cur)).ToString() : "h"))} chars={string.Join(";", _chars.Select(c => c.atlas != null ? $"{(c.atlas.Visible ? c.atlas.Name : "hid")}:{c.atlas.Index}" : DevSpr(c.spr)))}");
 
-    // === Master timer ===
-    private float _timer;
 
-    // === Spritesheet assets loaded from Content/resultScreen/ ===
-    private SpriteSheet _tallieNumberSheet;         // tallieNumber.png — tally counter digits
-    private SpriteSheet _scoreDigitalSheet;         // score-digital-numbers.png — score digit anims
-    private SpriteSheet _clearPercentLeftSheet;     // clearPercent/clearPercentNumberLeft.png
-    private SpriteSheet _clearPercentRightSheet;    // clearPercent/clearPercentNumberRight.png
-    private SpriteSheet _clearPercentSmallSheet;    // clearPercent/clearPercentNumberSmall.png
-    private Texture2D _clearPercentTextTex;         // clearPercent/clearPercentText.png
-    private Texture2D _clearPercentTextSmallTex;    // clearPercent/clearPercentTextSmall.png
-    private Texture2D _rankHorTex;                  // rankText/rankScroll{RANK}.png
-    private Texture2D _rankVerTex;                  // rankText/rankText{RANK}.png
-    private Texture2D _topBarBlackTex;              // topBarBlack.png
-
-    // === Gradient BG (cached texture) ===
-    private Texture2D _gradientBG;
-    private Texture2D _bgFlashTex;
-
-    // === BG flash (original: FlxGradient 0xFFFFF1A6 ? 0xFFFFF1BE) ===
-    private bool _bgFlashVisible;
-    private float _bgFlashAlpha;
-
-    // === Black top bar (original: BitmapUtil.createResultsBar, -3.8° rotation) ===
-    //     height = ceil(width / 8.7) ? 148 for 1280 width
-    //     slides from y = -height to y = 0, over 7/24s with 3/24s delay, quartOut
-    private int _topBarHeight;
-    private float _topBarY;
-
-    // === "RESULTS" sparrow anim (x = width - 1480, y = -10, at 6/24s) ===
-    private AnimatedSprite _resultsAnim;
-    private bool _resultsVisible;
-
-    // === Sound system sparrow anim (x = -15, y = -180, at 8/24s) ===
-    private AnimatedSprite _soundSystemAnim;
-    private bool _soundSystemVisible;
-
-    // === Ratings popin sparrow (x = -135, y = 135, at 21/24s) ===
-    private AnimatedSprite _ratingsPopin;
-    private bool _ratingsVisible;
-
-    // === Score popin sparrow (x = -180, y = 515, at 36/24s) ===
-    private AnimatedSprite _scorePopin;
-    private bool _scoreVisible;
-
-    // === Tally counters (7 rows, staggered reveal) ===
-    //     Each visible at (0.3*index)+1.20s, tween over 0.5s quartOut
-    private struct TallyEntry
-    {
-        public string Label;
-        public int TargetValue;
-        public Color ValueColor;
-        public int X, Y;
-        public float CurrentValue;
-        public bool Visible;
-        public bool TweenStarted;
-        public float TweenTimer;
-    }
-    private TallyEntry[] _tallies;
-
-    // === Score digits (original: ResultScore at x=35, y=305, 10 digits) ===
-    //     Shuffle animation: each digit shuffles for 41/24s then tweens to final over 23/24s
-    private bool _scoreDigitsVisible;
-    private float _scoreDigitTimer;
-    private int[] _scoreTargetDigits;
-    private float[] _scoreCurrentDigits;
-    private bool[] _scoreDigitDone;
-    private int _scoreDigitCount;
-    private float[] _scoreDigitShuffleTimers;
-    private bool[] _scoreDigitShuffling;
-
-    // === Clear percent counter (center, starts at 37/24s) ===
-    //     Position: (width/2 + 190, height/2 - 70)
-    //     Tweens from max(0, target-36) ? target over 58/24s, quartOut
-    private bool _clearPercentActive;
-    private float _clearPercentTimer;
-    private float _clearPercentCurrent;
-    private bool _clearPercentDone;
-    private float _clearPercentFlashTimer;
-    private bool _clearPercentFlashing;
-    private float _clearPercentFadeTimer;
-    private bool _clearPercentFading;
-    private float _clearPercentAlpha;
-
-    // === Rank text backdrop (at getFlashDelay) ===
-    //     12 horizontal FlxBackdrop rows, velocity x = ±7
-    //     1 vertical FlxBackdrop column, velocity y = -80 (after 30/24s)
-    private bool _rankTextVisible;
-    private float _rankTextTimer;
-    private float[] _rankRowOffsets;
-    private float _rankVertOffset;
-    private bool _rankVertScrolling;
-    private float _rankVertScrollDelay;
-    private float _rankVertFlickerTimer;  // FlxFlicker: 2/24*3 = 0.25s total, 2/24 period
-    private bool _rankVertFlickerDone;
-
-    // === BG flash fade duration (5/24 for tally start, 14/24 for rank display) ===
-    private float _bgFlashFadeDuration;
-
-    // === Small clear percent (shows in top bar after afterRankTallySequence) ===
-    private bool _smallClearPercentVisible;
-    private bool _smallClearPercentFlashing;
-    private float _smallClearPercentFlashTimer;
-    private float _smallClearPercentX;
-    private float _smallClearPercentY;
-
-    // === afterRankTallySequence at getBFDelay() ===
-    private bool _afterRankSequenceStarted;
-    private float _afterRankTimer;
-
-    // === Song name + difficulty + clearPercentSmall scrolling in top bar ===
-    //     Original: timerThenSongName(1.0, false) on create
-    //     Song name at angle -4.4°, scrolls with speedOfTween
-    //     After rank sequence: timerThenSongName(3.0, true) with auto-scroll
-    private float _songNameX;
-    private float _songNameY;
-    private float _difficultyX;
-    private float _difficultyY;
-    private bool _songNameMoving;
-    private float _songNameMoveDelay;
-    private bool _songNameTweenedIn;
-    private float _songNameTweenTimer;
-    private bool _songNameAutoScroll; // true after first scroll cycle (timerThenSongName autoScroll param)
-    private float _songNameScrollStartDelay; // delay within timerThenSongName before starting scroll
-    private Texture2D _songNameFontTex;  // tardlingSpritesheet.png bitmap font
-    private const float SONG_NAME_ANGLE = -4.4f; // degrees
-    private const int FONT_CHAR_W = 49;
-    private const int FONT_CHAR_H = 61;
-    private const int FONT_LETTER_SPACING = -15;
-    private static readonly string FONT_LETTERS = "AaBbCcDdEeFfGgHhiIJjKkLlMmNnOoPpQqRrSsTtUuVvWwXxYyZz:1234567890().-";
-
-    // === Speed of tween (original: starts at 0,0 ramps to target over 0.7s quadIn) ===
-    private float _speedOfTweenTargetX;
-    private float _speedOfTweenTargetY;
-    private float _speedOfTweenCurrentX;
-    private float _speedOfTweenCurrentY;
-    private bool _speedTweenActive;
-    private float _speedTweenTimer;
-    private bool _speedTweenStartedForCurrentCycle;
-
-    // === Highscore NEW (at getHighscoreDelay) ===
-    private AnimatedSprite _highscoreNewAnim;
-    private bool _highscoreNewVisible;
-
-    // === Character result animation (BF) ===
-    //     Original: loaded from playable character JSON (renderType=animateatlas)
-    //     Positioned at offsets, loopFrame, zIndex
-    private AnimatedSprite _characterResultAnim;
-    private bool _characterResultVisible;
-    private int _characterResultLoopFrame;
-
-    // === Difficulty texture ref (for width calculation) ===
-    private Texture2D _difficultyTex;
-
-    // === Score digit glow state (after tween, glow fires immediately) ===
-    private bool[] _scoreDigitGlow; // true = show glow frame (0001) instead of settled (0005)
-    private bool[] _scoreDigitFirstAppear; // true = first digit display uses glow frame
-
-    // === Score digit tween state (after shuffle, tween 0?finalDigit over 23/24s quadOut) ===
-    private bool[] _scoreDigitTweening;
-    private float[] _scoreDigitTweenTimers;
-
-    // === Music volume fade on exit ===
-    private bool _musicFading;
-    private float _musicFadeTimer;
-
-    // === Music delay ===
-    private bool _musicStarted;
-
-    // === Rank BG overlay (solid black, zIndex 99999, alpha 0 normally, used for exit) ===
-    private float _rankBgAlpha;
-
-    // === Exit transition ===
-    private bool _exiting;
-    private float _exitTimer;
-
-    // === Input busy flag ===
-    private bool _busy;
-
-    // === Story mode flag (determines exit target: StoryModeScene vs FreeplayScene) ===
-    private readonly bool _isStoryMode;
-
-    // Fallback constructor
     public ResultsScene(int score, int maxCombo, int misses, string songName = "")
         : this(score, maxCombo, misses, songName, "normal", false, 0, 0, 0, 0, misses, 0, 0) { }
 
     public ResultsScene(int score, int maxCombo, int misses, string songName,
-        int tallySick, int tallyGood, int tallyBad, int tallyShit,
-        int tallyMissed, int totalNotesHit, int totalNotes)
-        : this(score, maxCombo, misses, songName, "normal", false,
-              tallySick, tallyGood, tallyBad, tallyShit, tallyMissed, totalNotesHit, totalNotes) { }
+        int tallySick, int tallyGood, int tallyBad, int tallyShit, int tallyMissed, int totalNotesHit, int totalNotes)
+        : this(score, maxCombo, misses, songName, "normal", false, tallySick, tallyGood, tallyBad, tallyShit, tallyMissed, totalNotesHit, totalNotes) { }
 
-    public ResultsScene(int score, int maxCombo, int misses, string songName,
-        string difficultyId, bool isNewHighscore,
-        int tallySick, int tallyGood, int tallyBad, int tallyShit,
-        int tallyMissed, int totalNotesHit, int totalNotes,
+    public ResultsScene(int score, int maxCombo, int misses, string songName, string difficultyId, bool isNewHighscore,
+        int tallySick, int tallyGood, int tallyBad, int tallyShit, int tallyMissed, int totalNotesHit, int totalNotes,
         bool isStoryMode = false)
     {
-        _score = score;
-        _maxCombo = maxCombo;
-        _misses = misses;
-        _songName = songName;
-        _difficultyId = difficultyId ?? "normal";
-        _isNewHighscore = isNewHighscore;
-        _tallySick = tallySick;
-        _tallyGood = tallyGood;
-        _tallyBad = tallyBad;
-        _tallyShit = tallyShit;
-        _tallyMissed = tallyMissed;
-        _totalNotesHit = totalNotesHit;
-        _totalNotes = totalNotes;
-        _isStoryMode = isStoryMode;
+        _score = score; _maxCombo = maxCombo; _misses = misses; _songName = songName ?? "";
+        _difficultyId = difficultyId ?? "normal"; _isNewHighscore = isNewHighscore;
+        _tallySick = tallySick; _tallyGood = tallyGood; _tallyBad = tallyBad; _tallyShit = tallyShit;
+        _tallyMissed = tallyMissed; _totalNotesHit = totalNotesHit; _totalNotes = totalNotes; _isStoryMode = isStoryMode;
     }
 
+    // ===================================================================== timing helpers (FlxTimer / FlxTween)
+    private float _t;
+    // FlxTimer port: |time| (FlxTimer.start uses Math.abs), counter += elapsed from the frame AFTER creation (timers created
+    // in create()/callbacks are first updated by the next FlxTimerManager.update), loops, one onLoopFinished per frame,
+    // callbacks after the whole list was updated, in creation order.
+    private sealed class FTimer { public float Time, Counter; public int Loops, LoopsCounter, Frame; public bool Finished; public Action<FTimer> Cb; public int LoopsLeft => Loops - LoopsCounter; }
+    private readonly List<FTimer> _timers = new();
+    private int _frameNo; private float _dt; private bool _inTimers;
+    private FTimer StartTimer(float time, Action<FTimer> cb, int loops = 1)
+    {
+        var tm = new FTimer { Time = Math.Abs(time), Loops = Math.Abs(loops), Cb = cb, Frame = _frameNo };
+        _timers.Add(tm);
+        return tm;
+    }
+    private void After(float delay, Action a) => StartTimer(delay, _ => a());
+
+    private sealed class Tween
+    {
+        public float Start, Dur; public Func<float, float> Ease; public Action<float> Apply; public Action Done; public bool Dead;
+    }
+    private readonly List<Tween> _tweens = new();
+    private Tween TweenF(float dur, Func<float, float> ease, Action<float> apply, float delay = 0f, Action done = null)
+    {
+        var tw = new Tween { Start = _t + delay - (_inTimers ? _dt : 0f), Dur = dur, Ease = ease ?? Linear, Apply = apply, Done = done };
+        _tweens.Add(tw);
+        return tw;
+    }
+    private static float Linear(float x) => x;
+    private static float QuartOut(float x) => 1f - MathF.Pow(1f - x, 4f);
+    private static float ExpoOut(float x) => x >= 1f ? 1f : 1f - MathF.Pow(2f, -10f * x);
+    private static float QuadOut(float x) => -x * (x - 2f);
+    private static float QuadIn(float x) => x * x;
+
+    // ===================================================================== sparrow sprite (FlxSprite + FlxAnimation)
+    private sealed class Spr
+    {
+        public SpriteSheet Sheet;
+        public readonly Dictionary<string, List<SpriteFrame>> Anims = new();
+        public string Cur; public List<SpriteFrame> Frames; public int Frame; public float Timer; public bool Looped, Finished = true;
+        public float Fps = 24f;
+        public Vector2 Pos; public bool Visible = true; public Color Color = Color.White; public float Alpha = 1f;
+        public Action<string> OnFinish;
+        public bool White; // PureColor flash shader
+
+        public void AddByPrefix(string name, string prefix)
+        {
+            if (Sheet == null) return;
+            var list = Sheet.Frames.Where(kv => kv.Key.StartsWith(prefix, StringComparison.Ordinal))
+                .OrderBy(kv => kv.Key.Substring(prefix.Length).Length).ThenBy(kv => kv.Key, StringComparer.Ordinal)
+                .Select(kv => kv.Value).ToList();
+            Anims[name] = list;
+        }
+        public void Play(string name, bool force = false, int frame = 0)
+        {
+            if (!Anims.TryGetValue(name, out var f) || f.Count == 0) return;
+            if (!force && Cur == name && !Finished) return;
+            Cur = name; Frames = f; Timer = 0f; Finished = false;
+            Frame = Math.Min(frame, f.Count - 1);
+        }
+        public void Update(float dt)
+        {
+            if (Frames == null || Finished) return;
+            float dur = 1f / Fps;
+            Timer += dt;
+            while (Timer > dur && !Finished)
+            {
+                Timer -= dur;
+                if (Looped && Frame == Frames.Count - 1) Frame = 0;
+                else if (Frame + 1 > Frames.Count - 1 && !Looped)
+                {
+                    Finished = true;
+                    var cur = Cur; var fl = Frames;
+                    OnFinish?.Invoke(cur);
+                    if (Frames != fl || !Finished) break; // replayed by the callback
+                }
+                else Frame++;
+            }
+        }
+        public SpriteFrame CurFrame => Frames != null && Frames.Count > 0 ? Frames[Math.Clamp(Frame, 0, Frames.Count - 1)] : null;
+    }
+
+    // ===================================================================== flixel-animate replay (texture atlases)
+    private sealed class AtlasAnim
+    {
+        private struct Part { public SpriteFrame F; public Matrix M; public Vector4 Mul; public int Blend; }
+        private readonly List<Part>[] _ticks;
+        private readonly Texture2D _tex;
+        public readonly Vector2 BoundsMin; public readonly int FrameW, FrameH;
+        public int FrameCount => _ticks.Length;
+        public float Fps = 24f;
+        public readonly Dictionary<string, (int start, int len)> Labels = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, (float scale, float offset)> _scaleEls;
+
+        private static readonly BlendState ScreenBlend = new()
+        {
+            ColorSourceBlend = Blend.One, ColorDestinationBlend = Blend.InverseSourceColor,
+            AlphaSourceBlend = Blend.One, AlphaDestinationBlend = Blend.InverseSourceAlpha
+        };
+
+        public AtlasAnim(SpriteSheet sheet, string animationJsonPath, Dictionary<string, (float, float)> scaleEls = null)
+        {
+            _scaleEls = scaleEls;
+            _tex = sheet.Texture;
+            var root = JObject.Parse(global::FNF_MonoGame.Engine.FsCI.ReadAllText(animationJsonPath));
+            Fps = (float?)root["MD"]?["FRT"] ?? 24f;
+            var syms = new Dictionary<string, JToken>(StringComparer.Ordinal);
+            foreach (var s in root["SD"]?["S"] ?? new JArray()) syms[(string)s["SN"]] = s;
+            JToken main = root["AN"]["TL"];
+            int n = Duration(main);
+            foreach (var l in main["L"])
+                foreach (var f in l["FR"])
+                    if (f["N"] is JToken nm && !string.IsNullOrEmpty((string)nm) && !Labels.ContainsKey((string)nm))
+                        Labels[(string)nm] = ((int)f["I"], (int)f["DU"]);
+
+            // Timeline._bounds = getWholeBounds() at load (before any scaleElement by scripts)
+            float minX = float.MaxValue, minY = float.MaxValue, maxX = float.MinValue, maxY = float.MinValue;
+            for (int t = 0; t < n; t++)
+                foreach (var p in Flatten(main, syms, sheet, t, false))
+                {
+                    float w = p.F.SourceRect.Width, h = p.F.SourceRect.Height;  // p.M already maps the stored (rotated) atlas rect
+                    foreach (var v in new[] { Vector2.Zero, new Vector2(w, 0), new Vector2(0, h), new Vector2(w, h) })
+                    {
+                        var q = Vector2.Transform(v, p.M);
+                        minX = Math.Min(minX, q.X); minY = Math.Min(minY, q.Y); maxX = Math.Max(maxX, q.X); maxY = Math.Max(maxY, q.Y);
+                    }
+                }
+            if (minX == float.MaxValue) { minX = minY = 0; maxX = maxY = 1; }
+            // prefer the 1:1 port of flixel-animate Timeline.getWholeBounds (AABB-of-AABB + MovieClip filter extents)
+            if (sheet.WholeMainTimelineBounds is { } wb) { minX = wb.X; minY = wb.Y; maxX = wb.X + wb.W; maxY = wb.Y + wb.H; }
+            BoundsMin = new Vector2(minX, minY);
+            FrameW = (int)(maxX - minX); FrameH = (int)(maxY - minY);
+
+            _ticks = new List<Part>[n];
+            for (int t = 0; t < n; t++) _ticks[t] = Flatten(main, syms, sheet, t, true);
+        }
+
+        private static int Duration(JToken tl)
+        {
+            int d = 0;
+            foreach (var l in tl["L"]) foreach (var f in l["FR"]) d = Math.Max(d, (int)f["I"] + (int)f["DU"]);
+            return d;
+        }
+        private static JToken FrameAt(JToken layer, int t)
+        {
+            foreach (var f in layer["FR"]) { int i = (int)f["I"]; if (t >= i && t < i + (int)f["DU"]) return f; }
+            return null;
+        }
+        private static Matrix ReadMx(JToken inst)
+        {
+            var m = inst["MX"];
+            if (m != null) return new Matrix((float)m[0], (float)m[1], 0, 0, (float)m[2], (float)m[3], 0, 0, 0, 0, 1, 0, (float)m[4], (float)m[5], 0, 1);
+            var m3 = inst["M3D"];
+            if (m3 is JArray a3 && a3.Count >= 14)
+                return new Matrix((float)a3[0], (float)a3[1], 0, 0, (float)a3[4], (float)a3[5], 0, 0, 0, 0, 1, 0, (float)a3[12], (float)a3[13], 0, 1);
+            if (m3 is JObject o3)
+                return new Matrix((float)o3["m00"], (float)o3["m01"], 0, 0, (float)o3["m10"], (float)o3["m11"], 0, 0, 0, 0, 1, 0, (float)o3["m30"], (float)o3["m31"], 0, 1);
+            return Matrix.Identity;
+        }
+
+        private List<Part> Flatten(JToken main, Dictionary<string, JToken> syms, SpriteSheet sheet, int tick, bool scaled)
+        {
+            var outp = new List<Part>();
+            Walk(main, tick, Matrix.Identity, Vector4.One, 10, null);
+            return outp;
+
+            void Walk(JToken tl, int t, Matrix parent, Vector4 mul, int blend, string symName)
+            {
+                var layers = (JArray)tl["L"];
+                for (int li = layers.Count - 1; li >= 0; li--)
+                {
+                    var fr = FrameAt(layers[li], t);
+                    if (fr == null) continue;
+                    int fi = (int)fr["I"];
+                    var els = (JArray)fr["E"];
+                    for (int ei = 0; ei < els.Count; ei++)
+                    {
+                        // FunkinSprite.scaleElement on getFirstElement(symbol): a += s; d += s; tx -= offset (TRP ignored: 0 here)
+                        (float s, float o) se = default;
+                        bool scaleThis = scaled && symName != null && _scaleEls != null && _scaleEls.TryGetValue(symName, out se) && li == 0 && fi == 0 && ei == 0;
+                        var e = els[ei];
+                        Matrix local;
+                        if (e["ASI"] is JToken asi)
+                        {
+                            if (!sheet.Frames.TryGetValue((string)asi["N"], out var f)) continue;
+                            local = ReadMx(asi);
+                            if (scaleThis) { local.M11 += se.s; local.M22 += se.s; local.M41 -= se.o; }
+                            if (f.Rotated) local = new Matrix(0, -1, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, f.SourceRect.Width, 0, 1) * local;
+                            outp.Add(new Part { F = f, M = local * parent, Mul = mul, Blend = blend });
+                        }
+                        else if (e["SI"] is JToken si && syms.TryGetValue((string)si["SN"], out var sym))
+                        {
+                            JToken stl = sym["TL"];
+                            int dur = Math.Max(1, Duration(stl));
+                            int ff = (int?)si["FF"] ?? 0;
+                            int ft = ff + (t - fi);
+                            string st = (string)si["ST"] ?? "G";
+                            string lp = (string)si["LP"] ?? "LP";
+                            if (st == "MC" || st == "movieclip") ft = 0;
+                            else if (lp == "PO" || lp == "playonce") ft = Math.Min(ft, dur - 1);
+                            else if (lp == "SF" || lp == "singleframe") ft = ff;
+                            else ft = ((ft % dur) + dur) % dur;
+                            var m2 = mul;
+                            if (si["C"] is JToken c)
+                                m2 *= new Vector4((float?)c["RM"] ?? 1f, (float?)c["GM"] ?? 1f, (float?)c["BM"] ?? 1f, (float?)c["AM"] ?? 1f);
+                            int b = (int?)si["B"] ?? 10;
+                            int nb = b == 10 ? blend : b;
+                            local = ReadMx(si);
+                            if (scaleThis) { local.M11 += se.s; local.M22 += se.s; local.M41 -= se.o; }
+                            Walk(stl, ft, local * parent, m2, nb, (string)si["SN"]);
+                        }
+                    }
+                }
+            }
+        }
+
+        /// <summary>FlxAnimate.drawAnimate: translate(-bounds.min), translate(-origin), scale, translate(pos + origin).
+        /// Call with NO active SpriteBatch.</summary>
+        private static readonly BlendState AddPremul = new()
+        {
+            ColorSourceBlend = Blend.One, ColorDestinationBlend = Blend.One, AlphaSourceBlend = Blend.Zero, AlphaDestinationBlend = Blend.One
+        };
+
+        public void Draw(SpriteBatch sb, int frame, Vector2 pos, float scale, Func<Texture2D, Texture2D> premul, float alpha = 1f)
+        {
+            var origin = new Vector2((int)FrameW * 0.5f, (int)FrameH * 0.5f);
+            var place = Matrix.CreateTranslation(-BoundsMin.X - origin.X, -BoundsMin.Y - origin.Y, 0f)
+                      * Matrix.CreateScale(scale, scale, 1f)
+                      * Matrix.CreateTranslation(pos.X + origin.X, pos.Y + origin.Y, 0f);
+            foreach (var p in _ticks[Math.Clamp(frame, 0, _ticks.Length - 1)])
+            {
+                float a = p.Mul.W * alpha;
+                if (a <= 0f) continue;
+                // premultiplied texture (OpenFL bitmaps are premultiplied; avoids dark fringes on filtered edges)
+                BlendState bs = p.Blend == 0 ? AddPremul : p.Blend == 12 ? ScreenBlend : BlendState.AlphaBlend;
+                Color tint = new Color(Math.Min(1f, p.Mul.X) * a, Math.Min(1f, p.Mul.Y) * a, Math.Min(1f, p.Mul.Z) * a, a);
+                sb.Begin(SpriteSortMode.Immediate, bs, SamplerState.LinearClamp, null, RasterizerState.CullNone, null, p.M * place);
+                sb.Draw(premul(p.F.Texture ?? _tex), Vector2.Zero, p.F.SourceRect, tint);
+                sb.End();
+            }
+        }
+    }
+
+    /// <summary>FunkinSprite (texture atlas) + FlxAnimateController state.</summary>
+    private sealed class AtlasSprite
+    {
+        public AtlasAnim A; public Vector2 Pos; public float Scale = 1f; public bool Visible; public int Z;
+        public int[] Frames; public int Index; public float Timer; public bool Looped, Finished = true, Paused;
+        public string Name;
+        public Action<string> OnFinish; public Action<string, int> OnFrameChange;
+        public void Play(string label, bool force = true, int startFrame = 0)
+        {
+            int[] fr;
+            if (string.IsNullOrEmpty(label)) { fr = Enumerable.Range(0, A.FrameCount).ToArray(); label = ""; }
+            else if (A.Labels.TryGetValue(label, out var r)) fr = Enumerable.Range(r.start, r.len).ToArray();
+            else return; // "Animation does not exist!"
+            if (!force && Name == label && !Finished) { Paused = false; return; }
+            Name = label; Frames = fr; Index = Math.Min(startFrame, fr.Length - 1); Timer = 0; Finished = false; Paused = false; Looped = false;
+            OnFrameChange?.Invoke(Name, Index);
+        }
+        public void Update(float dt)
+        {
+            if (Frames == null || Finished || Paused) return;
+            float dur = 1f / A.Fps;
+            Timer += dt;
+            while (Timer > dur && !Finished)
+            {
+                Timer -= dur;
+                if (Looped && Index == Frames.Length - 1) { Index = 0; OnFrameChange?.Invoke(Name, Index); }
+                else if (Index + 1 > Frames.Length - 1 && !Looped)
+                {
+                    Finished = true;
+                    var fr = Frames;
+                    OnFinish?.Invoke(Name);
+                    if (Frames != fr || !Finished) break;
+                }
+                else { Index++; OnFrameChange?.Invoke(Name, Index); }
+            }
+        }
+        public int TimelineFrame => Frames == null ? 0 : Frames[Math.Clamp(Index, 0, Frames.Length - 1)];
+    }
+
+    // ===================================================================== state
+    private ScoringRank _rank;
+    private int _clearPercentTarget = 100, _clearPercentLerp;
+    private Texture2D _bgTex, _bgFlashTex, _topBarTex, _diffTex, _songFontTex, _rankHorTex, _rankVerTex;
+    private float _bgFlashAlpha = 1f; private bool _bgFlashVisible;
+    private float _topBarY;
+    private int _topBarH;
+    private Spr _soundSystem, _resultsAnim, _ratingsPopin, _scorePopin, _highscoreNew;
+    private SpriteSheet _tallySheet, _digitSheet, _cpLeft, _cpRight, _cpSmall;
+    private readonly Dictionary<Texture2D, Texture2D> _whiteTex = new();
+    private Texture2D _cpText, _cpTextSmall;
+
+    // characters (zIndex sorted at draw)
+    private readonly List<(int z, int order, AtlasSprite atlas, Spr spr, float scale)> _chars = new();
+    private readonly List<(AtlasSprite s, float delay, string startLabel, string sound)> _charAtlasQueue = new();
+    private readonly List<(Spr s, float delay)> _charSparrowQueue = new();
+
+    // tallies
+    private sealed class Tally { public float X, Y; public float Cur; public int Need; public Color Flavour; public bool Visible; public readonly List<Spr> Digits = new(); }
+    private readonly List<Tally> _tallies = new();
+
+    // ResultScore
+    private sealed class ScoreNum
+    {
+        public Spr S; public int Digit = 10, FinalDigit = 10; public bool Glow = true; public float FinalDelay;
+    }
+    private readonly ScoreNum[] _scoreNums = new ScoreNum[10];
+    private int _scoreStart;
+    private bool _scoreVisible;
+    private static readonly string[] NumToString = { "ZERO", "ONE", "TWO", "THREE", "FOUR", "FIVE", "SIX", "SEVEN", "EIGHT", "NINE", "DISABLED" };
+
+    // ClearPercentCounter
+    private sealed class ClearCounter
+    {
+        public float X, Y; public int Cur; public bool Small; public bool Changed = true; public bool Flash; public float Alpha = 1f;
+        public bool Visible = true; public bool Removed; public float LastX, LastY;
+        public readonly List<(Spr s, bool variant)> Digits = new(); // members[1..]
+    }
+    private ClearCounter _cpBig, _cpSmallCounter;
+    private bool _cpSmallAdded;
+
+    // rank text
+    private bool _rankTextShown;
+    private float _rankVertX, _rankVertY, _rankVertVy; private bool _rankVertVisible = true;
+    private readonly float[] _rankRowX = new float[12];
+    private readonly float[] _rankRowVx = new float[12];
+
+    // song name / difficulty / small clear percent
+    private float _diffX, _diffY, _songX, _songY;
+    private float _speedX, _speedY;
+    private bool _moving;
+    private const float SONG_ANGLE = -4.4f;
+    private readonly Dictionary<char, Rectangle> _songGlyphs = new();
+    private int _songW;
+
+    // music / exit
+    private bool _busy; private float _rankBgAlpha;
+    private float _musicVol = 1f; private bool _musicFading; private float _musicFadeT;
+
+    private string _playerId = "bf";
+    private JObject _playerData;
+
+    // ===================================================================== create()
     public override void Load()
     {
-        // Calculate rank (original: Scoring.calculateRank)
+        FNF_MonoGame.Engine.InputManager.DevSceneClock = () => _t;
         _rank = CalculateRank();
+        // NOTE: Only divide if totalNotes > 0. Scoring.tallyCompletion = clamp((sick + good - missed) / totalNotes, 0, 1)
+        float clearF = _totalNotes == 0 ? 0f : Math.Clamp((_tallySick + _tallyGood - _tallyMissed) / (float)_totalNotes, 0f, 1f) * 100f;
+        _clearPercentTarget = (int)Math.Floor(clearF);
+        Game.Discord?.SetResultsState(_songName, _difficultyId, _score, _clearPercentTarget, _isStoryMode, null);
+        Audio.StopMusic();
 
-        // Clear percent (original: Scoring.tallyCompletion * 100, floored)
-        float clearFloat = _totalNotes == 0 ? 0f
-            : Math.Clamp(_totalNotesHit / (float)_totalNotes, 0f, 1f) * 100f;
-        _clearPercentTarget = (int)Math.Floor(clearFloat);
-        _clearPercentCurrent = Math.Max(0, _clearPercentTarget - 36);
-        _clearPercentAlpha = 1f;
+        _bgTex = MakeGradient(new Color(0xFE, 0xCC, 0x5C), new Color(0xFD, 0xC0, 0x5C));
+        _bgFlashTex = MakeGradient(new Color(0xFF, 0xF1, 0xA6), new Color(0xFF, 0xF1, 0xBE));
+        _topBarTex = MakeResultsBar(out _topBarH);
+        _topBarY = -_topBarH;
 
-        // === Top bar ===
-        // Original: width = ceil(FlxG.width * 1.011), height = ceil(width / 8.7)
-        int topBarWidth = (int)Math.Ceiling(FNFGame.SCREEN_WIDTH * 1.011f);
-        _topBarHeight = (int)Math.Ceiling(topBarWidth / 8.7f); // ~149 for 1280 width
-        _topBarY = -_topBarHeight;
+        // soundSystem (-15, -180), visible + play at 8/24
+        _soundSystem = LoadSpr("resultScreen/soundSystem", -15, -180, ("idle", "sound system"));
+        _soundSystem.Visible = false;
+        After(8f / 24f, () => { _soundSystem.Play("idle"); _soundSystem.Visible = true; });
 
-        // === Load spritesheet animations ===
-        var resultsSheet = SpriteSheet.Load(Game, "resultScreen/results");
-        if (resultsSheet != null)
+        LoadPlayerAndCharacters();
+
+        _diffTex = Assets.LoadTexture($"resultScreen/diff_{_difficultyId}");
+        if (_diffTex == Assets.Pixel) _diffTex = Assets.LoadTexture("resultScreen/diff_normal");
+        BuildSongFont();
+
+        // blackTopBar: y -h -> 0, 7/24 quartOut, startDelay 3/24
+        TweenF(7f / 24f, QuartOut, k => _topBarY = -_topBarH + _topBarH * k, 3f / 24f);
+
+        _cpSmallCounter = new ClearCounter { X = 1280f / 2f + 300f, Y = 720f / 2f - 100f, Cur = 100, Small = true, Visible = false };
+        _cpSmallCounter.Y += _topBarH - 148;
+
+        // speedOfTween = (-cos(angle), -sin(angle)); timerThenSongName(1.0, false)
+        float ar = SONG_ANGLE * MathF.PI / 180f;
+        _speedX = -1f * MathF.Cos(ar); _speedY = -1f * MathF.Sin(ar);
+        TimerThenSongName(1.0f, false);
+
+        _resultsAnim = LoadSpr("resultScreen/results", 1280 - 1480, -10, ("result", "results instance 1"));
+        _resultsAnim.Visible = false;
+        After(6f / 24f, () => { _resultsAnim.Visible = true; _resultsAnim.Play("result"); });
+
+        _ratingsPopin = LoadSpr("resultScreen/ratingsPopin", -135, 135, ("idle", "Categories"));
+        _ratingsPopin.Visible = false;
+        After(21f / 24f, () => { _ratingsPopin.Visible = true; _ratingsPopin.Play("idle"); });
+
+        _scorePopin = LoadSpr("resultScreen/scorePopin", -180, 515, ("score", "tally score"));
+        _scorePopin.Visible = false;
+        After(36f / 24f, () => { _scorePopin.Visible = true; _scorePopin.Play("score"); });
+
+        After(37f / 24f, () => { _scoreVisible = true; AnimateNumbers(); StartRankTallySequence(); });
+        After(BFDelay(), AfterRankTallySequence);
+        After(FlashDelay(), DisplayRankText);
+
+        _highscoreNew = LoadSpr("resultScreen/highscoreNew", 44, 557, ("new", "highscoreAnim0"));
+        _highscoreNew.Visible = false;
+        _highscoreNew.OnFinish = _ => _highscoreNew.Play("new", true, 16);
+        After(HighscoreDelay(), () => { if (_isNewHighscore) { _highscoreNew.Visible = true; _highscoreNew.Play("new"); } else _highscoreNew.Visible = false; });
+
+        // TallyCounters (hStuf = 50; then 54 for the judgements; extraYOffset 7)
+        _tallySheet = SpriteSheet.Load(Game, "resultScreen/tallieNumber");
+        int hStuf = 50;
+        var totalHit = new Tally { X = 375, Y = hStuf * 3, Need = _totalNotesHit, Flavour = Color.White };
+        var maxCombo = new Tally { X = 375, Y = hStuf * 4, Need = _maxCombo, Flavour = Color.White };
+        if (_totalNotesHit >= 1000) { totalHit.X -= 30; maxCombo.X -= 30; }
+        hStuf += 4; const float ex = 7;
+        _tallies.Add(totalHit); _tallies.Add(maxCombo);
+        _tallies.Add(new Tally { X = 230, Y = hStuf * 5 + ex, Need = _tallySick, Flavour = new Color(0x89, 0xE5, 0x9E) });
+        _tallies.Add(new Tally { X = 210, Y = hStuf * 6 + ex, Need = _tallyGood, Flavour = new Color(0x89, 0xC9, 0xE5) });
+        _tallies.Add(new Tally { X = 190, Y = hStuf * 7 + ex, Need = _tallyBad, Flavour = new Color(0xE6, 0xCF, 0x8A) });
+        _tallies.Add(new Tally { X = 220, Y = hStuf * 8 + ex, Need = _tallyShit, Flavour = new Color(0xE6, 0x8C, 0x8A) });
+        _tallies.Add(new Tally { X = 260, Y = hStuf * 9 + ex, Need = _tallyMissed, Flavour = new Color(0xC6, 0x8A, 0xE6) });
+        for (int i = 0; i < _tallies.Count; i++)
         {
-            _resultsAnim = new AnimatedSprite { Sheet = resultsSheet };
-            _resultsAnim.Position = new Vector2(FNFGame.SCREEN_WIDTH - 1480, -10);
-            _resultsAnim.PlayAnimation("results instance 1", loop: false);
+            var tl = _tallies[i];
+            if (tl.Cur == tl.Need) DrawTallyNumbers(tl); // constructor: if (curNumber == neededNumber) drawNumbers()
+            After(0.3f * i + 1.20f, () => { tl.Visible = true; float from = tl.Cur; TweenF(0.5f, QuartOut, k => tl.Cur = from + (tl.Need - from) * k); });
         }
 
-        var soundSystemSheet = SpriteSheet.Load(Game, "resultScreen/soundSystem");
-        if (soundSystemSheet != null)
+        // ResultScore(35, 305, 10, score): ScoreNum(x + 65 i, y) added to a FlxSpriteGroup at (35, 305) -> (70 + 65 i, 610)
+        _digitSheet = SpriteSheet.Load(Game, "resultScreen/score-digital-numbers");
+        for (int i = 0; i < 10; i++)
         {
-            _soundSystemAnim = new AnimatedSprite { Sheet = soundSystemSheet };
-            _soundSystemAnim.Position = new Vector2(-15, -180);
-            _soundSystemAnim.PlayAnimation("sound system", loop: false);
+            var s = new Spr { Sheet = _digitSheet, Pos = new Vector2(35 + 65 * i + 35, 305 + 305) };
+            for (int d = 0; d < 10; d++) s.AddByPrefix(NumToString[d], NumToString[d] + " DIGITAL");
+            s.AddByPrefix("DISABLED", "DISABLED"); s.AddByPrefix("GONE", "GONE");
+            _scoreNums[i] = new ScoreNum { S = s };
+            s.Play("DISABLED", true);
         }
+        SetScoreShit(_score);
 
-        var ratingsSheet = SpriteSheet.Load(Game, "resultScreen/ratingsPopin");
-        if (ratingsSheet != null)
-        {
-            _ratingsPopin = new AnimatedSprite { Sheet = ratingsSheet };
-            _ratingsPopin.Position = new Vector2(-135, 135);
-            _ratingsPopin.PlayAnimation("Categories", loop: false);
-        }
+        // music at rank.getMusicDelay()
+        After(MusicDelay(), StartMusic);
 
-        var scoreSheet = SpriteSheet.Load(Game, "resultScreen/scorePopin");
-        if (scoreSheet != null)
-        {
-            _scorePopin = new AnimatedSprite { Sheet = scoreSheet };
-            _scorePopin.Position = new Vector2(-180, 515);
-            _scorePopin.PlayAnimation("tally score", loop: false);
-        }
+        _cpLeft = SpriteSheet.Load(Game, "resultScreen/clearPercent/clearPercentNumberLeft");
+        _cpRight = SpriteSheet.Load(Game, "resultScreen/clearPercent/clearPercentNumberRight");
+        _cpSmall = SpriteSheet.Load(Game, "resultScreen/clearPercent/clearPercentNumberSmall");
+        _cpText = Assets.LoadTexture("resultScreen/clearPercent/clearPercentText");
+        _cpTextSmall = Assets.LoadTexture("resultScreen/clearPercent/clearPercentTextSmall");
+        _rankHorTex = Assets.LoadTexture(HorTextAsset());
+        _rankVerTex = Assets.LoadTexture(VerTextAsset());
 
-        var highscoreSheet = SpriteSheet.Load(Game, "resultScreen/highscoreNew");
-        if (highscoreSheet != null)
-        {
-            _highscoreNewAnim = new AnimatedSprite { Sheet = highscoreSheet };
-            _highscoreNewAnim.Position = new Vector2(44, 557);
-            // Note: setGraphicSize(width * 0.8) is commented out in original source
-            _highscoreNewAnim.PlayAnimation("highscoreAnim0", loop: false);
-            // Original: onFinish -> play("new", true, false, 16) — loop from frame 16
-            _highscoreNewAnim.OnFinish = () =>
-            {
-                _highscoreNewAnim.PlayAnimationFromFrame("highscoreAnim0", 16, loop: false);
-            };
-        }
-
-        // === Load number spritesheets ===
-        _tallieNumberSheet = SpriteSheet.Load(Game, "resultScreen/tallieNumber");
-        _scoreDigitalSheet = SpriteSheet.Load(Game, "resultScreen/score-digital-numbers");
-        _clearPercentLeftSheet = SpriteSheet.Load(Game, "resultScreen/clearPercent/clearPercentNumberLeft");
-        _clearPercentRightSheet = SpriteSheet.Load(Game, "resultScreen/clearPercent/clearPercentNumberRight");
-        _clearPercentSmallSheet = SpriteSheet.Load(Game, "resultScreen/clearPercent/clearPercentNumberSmall");
-        _clearPercentTextTex = Assets.LoadTexture("resultScreen/clearPercent/clearPercentText");
-        _clearPercentTextSmallTex = Assets.LoadTexture("resultScreen/clearPercent/clearPercentTextSmall");
-
-        // === Load rank text backdrop textures ===
-        _rankHorTex = Assets.LoadTexture(GetHorTextAsset());
-        _rankVerTex = Assets.LoadTexture(GetVerTextAsset());
-
-        // === Load top bar texture ===
-        _topBarBlackTex = Assets.LoadTexture("resultScreen/topBarBlack");
-
-        // === Load song name bitmap font ===
-        _songNameFontTex = Assets.LoadTexture("resultScreen/tardlingSpritesheet");
-
-        // === Load difficulty texture and store reference ===
-        _difficultyTex = Assets.LoadTexture($"resultScreen/diff_{_difficultyId}");
-        if (_difficultyTex == Assets.Pixel) _difficultyTex = null;
-
-        // === Load character result animation (BF) ===
-        LoadCharacterResultAnimation();
-
-        // === Build tally counter entries (matches original positions exactly) ===
-        // Original: hStuf starts at 50 for totalHit/maxCombo, then hStuf += 2 twice = 54 for judgements
-        int hitComboX = 375;
-        // Original: if totalNotesHit >= 1000, shift totalHit and maxCombo left by 30
-        if (_totalNotesHit >= 1000) hitComboX -= 30;
-        int extraYOffset = 7;
-        _tallies = new TallyEntry[]
-        {
-            new() { Label = "TOTAL NOTES HIT", TargetValue = _totalNotesHit, ValueColor = Color.White,
-                     X = hitComboX, Y = 50 * 3 },   // hStuf=50
-            new() { Label = "MAX COMBO",       TargetValue = _maxCombo,       ValueColor = Color.White,
-                     X = hitComboX, Y = 50 * 4 },   // hStuf=50
-            new() { Label = "SICK",   TargetValue = _tallySick,   ValueColor = new Color(0x89, 0xE5, 0x9E),
-                     X = 230, Y = (54 * 5) + extraYOffset },   // hStuf=54
-            new() { Label = "GOOD",   TargetValue = _tallyGood,   ValueColor = new Color(0x89, 0xC9, 0xE5),
-                     X = 210, Y = (54 * 6) + extraYOffset },
-            new() { Label = "BAD",    TargetValue = _tallyBad,    ValueColor = new Color(0xE6, 0xCF, 0x8A),
-                     X = 190, Y = (54 * 7) + extraYOffset },
-            new() { Label = "SHIT",   TargetValue = _tallyShit,   ValueColor = new Color(0xE6, 0x8C, 0x8A),
-                     X = 220, Y = (54 * 8) + extraYOffset },
-            new() { Label = "MISSED", TargetValue = _tallyMissed, ValueColor = new Color(0xC6, 0x8A, 0xE6),
-                     X = 260, Y = (54 * 9) + extraYOffset },
-        };
-
-        // === Score digits (10 digits like original ResultScore) ===
-        _scoreDigitCount = 10;
-        _scoreTargetDigits = new int[_scoreDigitCount];
-        _scoreCurrentDigits = new float[_scoreDigitCount];
-        _scoreDigitDone = new bool[_scoreDigitCount];
-        _scoreDigitShuffleTimers = new float[_scoreDigitCount];
-        _scoreDigitShuffling = new bool[_scoreDigitCount];
-        _scoreDigitTweening = new bool[_scoreDigitCount];
-        _scoreDigitTweenTimers = new float[_scoreDigitCount];
-        _scoreDigitGlow = new bool[_scoreDigitCount];
-        _scoreDigitFirstAppear = new bool[_scoreDigitCount];
-        for (int i = 0; i < _scoreDigitCount; i++)
-            _scoreDigitFirstAppear[i] = true;
-
-        // Break score into digits (right-aligned, leading zeros become 10 = "disabled")
-        string scoreStr = _score.ToString().PadLeft(_scoreDigitCount, ' ');
-        for (int i = 0; i < _scoreDigitCount; i++)
-        {
-            if (scoreStr[i] == ' ')
-                _scoreTargetDigits[i] = 10; // DISABLED/GONE
-            else
-                _scoreTargetDigits[i] = scoreStr[i] - '0';
-        }
-
-        // === Rank backdrop ===
-        _rankRowOffsets = new float[12];
-
-        // === Song name positioning ===
-        // Original: difficulty at x=555, clearPercentSmall beside it, songName beside that
-        // All start at y = -height (offscreen), tween down during timerThenSongName
-        _difficultyX = 555;
-        _difficultyY = -50;
-        int initDiffW = _difficultyTex != null ? _difficultyTex.Width : 80;
-        _smallClearPercentX = _difficultyX + initDiffW + 60;
-        _smallClearPercentY = -30;
-        _songNameX = _smallClearPercentX + 94; // original: songName.x = clearPercentSmall.x + 94
-        _songNameY = -50;
-        _songNameMoveDelay = 0f; // timerThenSongName(1.0, false) called on create — tweens start immediately
-        _songNameAutoScroll = false; // first call: no auto-scroll
-        _songNameScrollStartDelay = 1.0f; // timerLength=1.0 for speed ramp delay
-
-        // Compute speed direction from song name angle (original: speedOfTween)
-        float angleRad = SONG_NAME_ANGLE * MathF.PI / 180f;
-        _speedOfTweenTargetX = -1.0f * MathF.Cos(angleRad);
-        _speedOfTweenTargetY = -1.0f * MathF.Sin(angleRad);
-
-        // === Preload sounds ===
         Audio.PreloadSound("scrollMenu");
         Audio.PreloadSound("confirmMenu");
-
-        // === Stop any existing music ===
-        Audio.StopMusic();
     }
 
-    private void LoadCharacterResultAnimation()
+    private Spr LoadSpr(string path, float x, float y, params (string name, string prefix)[] anims)
     {
-        // Load result animations based on rank and selected character
-        string selectedChar = Engine.HighscoreManager.Data.SelectedCharacter ?? "bf";
-        string charFolder = selectedChar == "pico" ? "results-pico" : "results-bf";
-        
-        string animPath = _rank switch
+        var s = new Spr { Sheet = SpriteSheet.Load(Game, path), Pos = new Vector2(x, y) };
+        foreach (var a in anims) s.AddByPrefix(a.name, a.prefix);
+        return s;
+    }
+
+    // ===================================================================== player data / character animations
+    private void LoadPlayerAndCharacters()
+    {
+        string charId = CharacterId;
+        if (string.IsNullOrEmpty(charId))
+            charId = (HighscoreManager.Data.SelectedCharacter ?? "bf") == "pico" ? "pico-playable" : "bf";
+        // PlayerRegistry.getCharacterOwnerId(characterId) ?? 'bf'
+        _playerId = "bf";
+        foreach (var p in new[] { "bf", "pico" })
         {
-            ScoringRank.PERFECT_GOLD or ScoringRank.PERFECT => $"resultScreen/{charFolder}/resultsPERFECT/bed",
-            ScoringRank.EXCELLENT => $"resultScreen/{charFolder}/resultsEXCELLENT",
-            ScoringRank.GREAT => $"resultScreen/{charFolder}/resultsGREAT/bf",
-            ScoringRank.GOOD => $"resultScreen/{charFolder}/resultsGOOD/bf",
-            ScoringRank.SHIT => $"resultScreen/{charFolder}/resultsSHIT",
-            _ => null
-        };
-        
-        // Try character-specific folder first, fall back to bf
-        if (animPath != null && selectedChar == "pico")
-        {
-            bool picoExists = false;
-            string resolved = Assets.ResolveDirectory(animPath);
-            if (resolved != null)
-                picoExists = File.Exists(Path.Combine(resolved, "spritemap1.png"));
-            if (!picoExists)
-                picoExists = Assets.ResolvePath(animPath + ".png") != null;
-            if (!picoExists)
-            {
-                charFolder = "results-bf";
-                animPath = _rank switch
-                {
-                    ScoringRank.PERFECT_GOLD or ScoringRank.PERFECT => $"resultScreen/{charFolder}/resultsPERFECT/bed",
-                    ScoringRank.EXCELLENT => $"resultScreen/{charFolder}/resultsEXCELLENT",
-                    ScoringRank.GREAT => $"resultScreen/{charFolder}/resultsGREAT/bf",
-                    ScoringRank.GOOD => $"resultScreen/{charFolder}/resultsGOOD/bf",
-                    ScoringRank.SHIT => $"resultScreen/{charFolder}/resultsSHIT",
-                    _ => null
-                };
-            }
+            var jo = LoadJson($"data/players/{p}.json");
+            if (jo?["ownedChars"] is JArray owned && owned.Any(o => (string)o == charId)) { _playerId = p; break; }
         }
+        _playerData = LoadJson($"data/players/{_playerId}.json");
 
-        // Original offsets from bf.json player data
-        Vector2 offset = _rank switch
+        string key = _rank switch
         {
-            ScoringRank.PERFECT_GOLD or ScoringRank.PERFECT => new Vector2(403, -305),
-            ScoringRank.EXCELLENT => new Vector2(560.85f, -410.35f),
-            ScoringRank.GREAT => new Vector2(655.3f, -247.95f),
-            ScoringRank.GOOD => new Vector2(645.4f, -214.8f),
-            ScoringRank.SHIT => new Vector2(570.5f, -390.5f),
-            _ => Vector2.Zero
+            ScoringRank.PERFECT_GOLD => "perfectGold", ScoringRank.PERFECT => "perfect", ScoringRank.EXCELLENT => "excellent",
+            ScoringRank.GREAT => "great", ScoringRank.GOOD => "good", _ => "loss"
         };
-
-        _characterResultLoopFrame = _rank switch
+        var list = _playerData?["results"]?[key] as JArray;
+        if (list == null) return;
+        bool naughty = true; // Preferences.naughtyness default
+        int order = 0;
+        foreach (var ad in list)
         {
-            // Frame indices from Animation.json label data:
-            // PERFECT: "LOOP START" at frame 137
-            // EXCELLENT: loopFrame 29 from bf.json
-            // GREAT: loopFrame 15 from bf.json
-            // GOOD: loopFrame 14 from bf.json
-            // SHIT: "Loop Start" at frame 149
-            ScoringRank.PERFECT_GOLD or ScoringRank.PERFECT => 137,
-            ScoringRank.EXCELLENT => 29,
-            ScoringRank.GREAT => 15,
-            ScoringRank.GOOD => 14,
-            ScoringRank.SHIT => 149,
-            _ => 0
-        };
-
-        if (animPath == null) return;
-
-        var sheet = SpriteSheet.Load(Game, animPath, preRenderComposites: true);
-        if (sheet == null) return;
-
-        _characterResultAnim = new AnimatedSprite
-        {
-            Sheet = sheet,
-            Position = offset
-        };
-
-        float scale = _rank == ScoringRank.GREAT ? 0.93f : 1.0f;
-        _characterResultAnim.Scale = new Vector2(scale, scale);
-
-        // Find and play the first animation available
-        string firstAnim = sheet.Animations.Keys.FirstOrDefault();
-        if (firstAnim != null)
-        {
-            // Original: plays once (non-looping), then on finish, replays from loopFrame
-            // This creates an infinite loop from loopFrame via OnFinish callback
-            _characterResultAnim.PlayAnimation(firstAnim, loop: false);
-
-            if (_characterResultLoopFrame > 0)
+            string filter = (string)ad["filter"] ?? "both";
+            if (filter != "both" && (naughty && filter != "naughty" || !naughty && filter != "safe")) continue;
+            string assetPath = (string)ad["assetPath"];
+            string script = (string)ad["scriptClass"];
+            var offs = ad["offsets"] as JArray;
+            float ox = offs != null ? (float)offs[0] : 0f, oy = offs != null ? (float)offs[1] : 0f;
+            int z = (int?)ad["zIndex"] ?? 500;
+            float scale = (float?)ad["scale"] ?? 1f;
+            float delay = (float?)ad["delay"] ?? 0f;
+            string path = assetPath != null ? StripLibrary(assetPath) : ScriptAtlasPath(script);
+            switch ((string)ad["renderType"])
             {
-                _characterResultAnim.OnFinish = () =>
+                case "animateatlas":
                 {
-                    _characterResultAnim.PlayAnimationFromFrame(firstAnim, _characterResultLoopFrame, loop: false);
-                };
-            }
-        }
-
-        // Load GF for GREAT rank (original: separate sprite at zIndex 499, delay 0.25)
-        if (_rank == ScoringRank.GREAT)
-        {
-            var gfSheet = SpriteSheet.Load(Game, $"resultScreen/{charFolder}/resultsGREAT/gf", preRenderComposites: true);
-            if (gfSheet != null)
-            {
-                _gfResultAnim = new AnimatedSprite
-                {
-                    Sheet = gfSheet,
-                    Position = new Vector2(563.364f, -123.186f),
-                    Scale = new Vector2(0.93f, 0.93f)
-                };
-                string gfAnim = gfSheet.Animations.Keys.FirstOrDefault();
-                if (gfAnim != null)
-                {
-                    _gfResultAnim.PlayAnimation(gfAnim, loop: false);
-                    _gfResultAnim.OnFinish = () =>
-                    {
-                        _gfResultAnim.PlayAnimationFromFrame(gfAnim, 9, loop: false);
-                    };
+                    if (path == null) continue;
+                    var anim = LoadAtlas(path, script == "PicoGoodResults"
+                        ? new Dictionary<string, (float, float)> { ["white small"] = (10f, 500f), ["blacksmall"] = (15f, 500f) } : null);
+                    if (anim == null) continue;
+                    var spr = new AtlasSprite { A = anim, Pos = new Vector2(ox, oy), Scale = scale, Z = z, Visible = false };
+                    bool looped = (bool?)ad["looped"] ?? true;
+                    string loopLabel = (string)ad["loopFrameLabel"];
+                    int? loopFrame = (int?)ad["loopFrame"];
+                    if (!looped) spr.OnFinish = _ => spr.Paused = true;
+                    else if (loopLabel != null) spr.OnFinish = _ => { spr.Play(loopLabel, true); spr.Looped = true; };
+                    else if (loopFrame != null) spr.OnFinish = _ => spr.Play("", true, loopFrame.Value);
+                    if (script == "PicoGoodResults") HookPicoGood(spr);
+                    _chars.Add((z, order++, spr, null, scale));
+                    _charAtlasQueue.Add((spr, delay, (string)ad["startFrameLabel"] ?? "", (string)ad["sound"] ?? ""));
+                    break;
                 }
-            }
-        }
-        // Load GF for GOOD rank (sparrow spritesheet, delay 0.91, loopFrame 9)
-        else if (_rank == ScoringRank.GOOD)
-        {
-            var gfSheet = SpriteSheet.Load(Game, $"resultScreen/{charFolder}/resultsGOOD/resultGirlfriendGOOD", preRenderComposites: true);
-            if (gfSheet != null)
-            {
-                _gfResultAnim = new AnimatedSprite
+                case "sparrow":
                 {
-                    Sheet = gfSheet,
-                    Position = new Vector2(629, 323)
-                };
-                string gfAnim = gfSheet.Animations.Keys.FirstOrDefault();
-                if (gfAnim != null)
-                {
-                    _gfResultAnim.PlayAnimation(gfAnim, loop: false);
-                    _gfResultAnim.OnFinish = () =>
-                    {
-                        _gfResultAnim.PlayAnimationFromFrame(gfAnim, 9, loop: false);
-                    };
-                }
-            }
-        }
-
-        // Load hearts for PERFECT rank (delay 4.41, loopFrame 43)
-        if (_rank == ScoringRank.PERFECT_GOLD || _rank == ScoringRank.PERFECT)
-        {
-            var heartsSheet = SpriteSheet.Load(Game, $"resultScreen/{charFolder}/resultsPERFECT/hearts", preRenderComposites: true);
-            if (heartsSheet != null)
-            {
-                _heartsResultAnim = new AnimatedSprite
-                {
-                    Sheet = heartsSheet,
-                    Position = new Vector2(630, 300)
-                };
-                string heartsAnim = heartsSheet.Animations.Keys.FirstOrDefault();
-                if (heartsAnim != null)
-                {
-                    _heartsResultAnim.PlayAnimation(heartsAnim, loop: false);
-                    _heartsResultAnim.OnFinish = () =>
-                    {
-                        _heartsResultAnim.PlayAnimationFromFrame(heartsAnim, 43, loop: false);
-                    };
+                    if (path == null) continue;
+                    var s = new Spr { Sheet = SpriteSheet.Load(Game, path), Pos = new Vector2(ox, oy), Visible = false };
+                    s.AddByPrefix("idle", "");
+                    int? loopFrame = (int?)ad["loopFrame"];
+                    if (loopFrame != null) s.OnFinish = _ => s.Play("idle", true, loopFrame.Value);
+                    _chars.Add((z, order++, null, s, 1f));
+                    _charSparrowQueue.Add((s, delay));
+                    break;
                 }
             }
         }
     }
 
-    // GF / secondary character animation
-    private AnimatedSprite _gfResultAnim;
-    private bool _gfResultVisible;
+    /// <summary>PicoGoodResults.hxc: when the default symbol plays, override with "intro" (5 % "intro fat gf",
+    /// else 20 % "intro cass"); every other finished anim loops "loop".</summary>
+    private void HookPicoGood(AtlasSprite spr)
+    {
+        var rnd = new Random();
+        spr.OnFrameChange = (name, frame) =>
+        {
+            if (name == "" && spr.Visible)
+            {
+                if (rnd.NextDouble() * 100 < 5) spr.Play("intro fat gf", true, 0);
+                else if (rnd.NextDouble() * 100 < 20) spr.Play("intro cass", true, 0);
+                else spr.Play("intro", true, 0);
+            }
+        };
+        spr.OnFinish = name => { if (name == "") return; spr.Play("loop", true); spr.Looped = true; };
+    }
 
-    // Hearts animation for PERFECT rank (delay 4.41, loopFrame 43)
-    private AnimatedSprite _heartsResultAnim;
-    private bool _heartsResultVisible;
+    private static string ScriptAtlasPath(string script) => script switch
+    {
+        "BFBedPerfectResults" => "resultScreen/results-bf/resultsPERFECT/bed",
+        "BFShitResults" => "resultScreen/results-bf/resultsSHIT",
+        "PicoGoodResults" => "resultScreen/results-pico/resultsGOOD",
+        "PicoGreatResults" => "resultScreen/results-pico/resultsGREAT",
+        "PicoPerfectResults" => "resultScreen/results-pico/resultsPERFECT",
+        _ => null
+    };
+
+    private static string StripLibrary(string p) { int i = p.IndexOf(':'); return i >= 0 ? p.Substring(i + 1) : p; }
+
+    private AtlasAnim LoadAtlas(string path, Dictionary<string, (float, float)> scaleEls)
+    {
+        try
+        {
+            string dir = Assets.ResolveDirectory(path);
+            if (dir == null) return null;
+            string json = Path.Combine(dir, "Animation.json");
+            if (!global::FNF_MonoGame.Engine.FsCI.FileExists(json)) return null;
+            var sheet = SpriteSheet.Load(Game, path);
+            if (sheet?.Texture == null) return null;
+            return new AtlasAnim(sheet, json, scaleEls);
+        }
+        catch (Exception ex) { Console.WriteLine($"[RESULTS] atlas {path}: {ex.Message}"); return null; }
+    }
+
+    private JObject LoadJson(string rel)
+    {
+        try { string p = Assets.ResolvePath(rel); return p != null ? JObject.Parse(global::FNF_MonoGame.Engine.FsCI.ReadAllText(p)) : null; }
+        catch { return null; }
+    }
+
+    // ===================================================================== sequences
+    private void StartRankTallySequence()
+    {
+        _bgFlashVisible = true;
+        float a0 = _bgFlashAlpha;
+        TweenF(5f / 24f, Linear, k => _bgFlashAlpha = a0 * (1f - k));
+        _clearPercentLerp = Math.Max(0, _clearPercentTarget - 36);
+        _cpBig = new ClearCounter { X = 1280f / 2f + 190f, Y = 720f / 2f - 70f, Cur = _clearPercentLerp };
+        int from = _clearPercentLerp;
+        var big = _cpBig;
+        TweenF(58f / 24f, QuartOut, k =>
+        {
+            // FlxTween writes a Float into the Int property (truncated), onUpdate rounds it
+            big.Cur = (int)(from + (_clearPercentTarget - from) * k); big.Changed = true;
+            if (_clearPercentLerp != big.Cur) { _clearPercentLerp = big.Cur; Audio.PlaySound("scrollMenu"); }
+        }, 0f, () =>
+        {
+            Audio.PlaySound("confirmMenu");
+            big.Cur = _clearPercentTarget; big.Changed = true;
+            big.Flash = true;
+            After(0.4f, () => big.Flash = false);
+            After(0.25f, () => TweenF(0.5f, QuartOut, k => big.Alpha = 1f - k, 0.5f, () => big.Removed = true));
+        });
+    }
+
+    private void DisplayRankText()
+    {
+        _bgFlashVisible = true;
+        _bgFlashAlpha = 1f;
+        TweenF(14f / 24f, Linear, k => _bgFlashAlpha = 1f - k);
+        _rankTextShown = true;
+        _rankVertX = 1280 - 44; _rankVertY = 100; _rankVertVy = 0;
+        // FlxFlicker.flicker(rankTextVert, 2/24*3, 2/24, true): toggles every 2/24, ends visible
+        _rankVertVisible = true;
+        StartTimer(2f / 24f, tm => { _rankVertVisible = !_rankVertVisible; if (tm.Loops > 0 && tm.LoopsLeft == 0) _rankVertVisible = true; }, 3);
+        After(30f / 24f, () => _rankVertVy = -80f);
+        for (int i = 0; i < 12; i++) { _rankRowX[i] = 1280f / 2f - 320f; _rankRowVx[i] = i % 2 == 0 ? -7f : 7f; }
+    }
+
+    private void AfterRankTallySequence()
+    {
+        // showSmallClearPercent
+        _cpSmallAdded = true;
+        _cpSmallCounter.Visible = true;
+        _cpSmallCounter.Flash = true;
+        After(0.4f, () => _cpSmallCounter.Flash = false);
+        _cpSmallCounter.Cur = _clearPercentTarget; _cpSmallCounter.Changed = true;
+        After(2.5f, () => _moving = true);
+
+        foreach (var q in _charAtlasQueue)
+        {
+            var qq = q;
+            After(qq.delay, () =>
+            {
+                qq.s.Visible = true;
+                qq.s.Play(qq.startLabel, false);
+                if (qq.sound != "") Audio.PlaySound(StripLibrary(qq.sound));
+            });
+        }
+        foreach (var q in _charSparrowQueue)
+        {
+            var qq = q;
+            After(qq.delay, () => { qq.s.Visible = true; qq.s.Play("idle", true); });
+        }
+    }
+
+    private void TimerThenSongName(float timerLength, bool autoScroll)
+    {
+        _moving = false;
+        _diffX = 555;
+        float diffYTween = 122;
+        int diffH = _diffTex?.Height ?? 58;
+        _diffY = -diffH;
+        TweenF(0.5f, ExpoOut, k => _diffY = -diffH + (diffYTween + (_topBarH - 148) + diffH) * k, 0.8f);
+
+        _cpSmallCounter.X = _diffX + (_diffTex?.Width ?? 227) + 60;
+        float cpH = _cpTextSmall?.Height ?? 33;
+        float cpFrom = -cpH;
+        _cpSmallCounter.Y = cpFrom; _cpSmallCounter.Changed = true;
+        float cpTo = (122 - 5) + (_topBarH - 148);
+        TweenF(0.5f, ExpoOut, k => { _cpSmallCounter.Y = cpFrom + (cpTo - cpFrom) * k; _cpSmallCounter.Changed = true; }, 0.85f);
+
+        float songH = 61;
+        _songY = -songH;
+        float fucked = -(_songW * 0.5f) * MathF.Sin(SONG_ANGLE * MathF.PI / 180f) - 10f;
+        float songTo = (diffYTween - 25 - fucked) + (_topBarH - 148);
+        TweenF(0.5f, ExpoOut, k => _songY = -songH + (songTo + songH) * k, 0.9f);
+        _songX = _cpSmallCounter.X + 94;
+
+        After(timerLength, () =>
+        {
+            float tx = -1f * MathF.Cos(SONG_ANGLE * MathF.PI / 180f), ty = -1f * MathF.Sin(SONG_ANGLE * MathF.PI / 180f);
+            _speedX = 0; _speedY = 0;
+            TweenF(0.7f, QuadIn, k => { _speedX = tx * k; _speedY = ty * k; });
+            _moving = autoScroll;
+        });
+    }
+
+    private void StartMusic()
+    {
+        string path = (string)_playerData?["results"]?["music"]?[RankKey()] ?? "resultsNORMAL";
+        string intro = $"music/{path}/{path}-intro";
+        string loop = $"music/{path}/{path}";
+        if (Assets.ResolvePath(intro + ".ogg") != null) Audio.PlayMusicWithIntro(intro, loop);
+        else Audio.PlayMusic(loop, true);
+    }
+
+    private string RankKey() => _rank switch
+    {
+        ScoringRank.PERFECT_GOLD => "PERFECT_GOLD", ScoringRank.PERFECT => "PERFECT", ScoringRank.EXCELLENT => "EXCELLENT",
+        ScoringRank.GREAT => "GREAT", ScoringRank.GOOD => "GOOD", _ => "SHIT"
+    };
+
+    // ===================================================================== ResultScore / ScoreNum
+    private void SetScoreShit(int val)
+    {
+        int loopNum = 9;
+        long dumb = Math.Min((long)val, 9999999999L);
+        while (dumb > 0)
+        {
+            _scoreStart += 1;
+            _scoreNums[loopNum].FinalDigit = (int)(dumb % 10);
+            _scoreNums[loopNum].S.Play("GONE", true, 0); // set_finalDigit
+            dumb /= 10;
+            loopNum--;
+        }
+        while (loopNum > 0) { SetDigit(_scoreNums[loopNum], 10); loopNum--; }
+    }
+
+    private void SetDigit(ScoreNum n, int val)
+    {
+        if (val >= 0 && n.S.Cur != NumToString[val])
+        {
+            if (n.Glow) { n.S.Play(NumToString[val], true, 0); n.Glow = false; }
+            else n.S.Play(NumToString[val], true, 4);
+        }
+        n.Digit = val;
+    }
+
+    private void AnimateNumbers()
+    {
+        for (int i = 10 - _scoreStart; i < 10; i++)
+        {
+            int ii = i;
+            After((ii - 1) / 24f, () =>
+            {
+                var n = _scoreNums[ii];
+                n.FinalDelay = _scoreStart - (ii - 1);
+                n.S.Play(NumToString[n.Digit], true, 0); // playAnim
+                // shuffle(): FlxTimer(1/24, shuffleProgress, Std.int((41/24)/(1/24)) = 41 loops)
+                StartTimer(1f / 24f, tm =>
+                {
+                    int td = n.Digit + 1;
+                    if (td > 9) td = 0;
+                    SetDigit(n, td);
+                    if (tm.Loops > 0 && tm.LoopsLeft == 0)
+                    {
+                        // finishShuffleTween: FlxTween.num(0, finalDigit, 23/24, quadOut) -> digit = floor(x)
+                        int fd = n.FinalDigit;
+                        TweenF(23f / 24f, QuadOut, k => SetDigit(n, (int)MathF.Floor(fd * k)), 0f,
+                            () => After(n.FinalDelay / 24f, () => n.S.Play(n.S.Cur, true, 0)));
+                    }
+                }, 41);
+            });
+        }
+    }
+
+    // ===================================================================== TallyCounter
+    private void DrawTallyNumbers(Tally tl)
+    {
+        var sep = new List<int>();
+        int temp = (int)RoundCompat.AwayFromZero(tl.Cur);
+        while (temp != 0) { sep.Add(temp % 10); temp /= 10; }
+        if (sep.Count == 0) sep.Add(0);
+        sep.Reverse();
+        for (int ind = 0; ind < sep.Count; ind++)
+        {
+            if (ind >= tl.Digits.Count)
+            {
+                var s = new Spr { Sheet = _tallySheet, Pos = new Vector2(tl.X + ind * 43, tl.Y), Color = tl.Flavour };
+                for (int d = 0; d < 10; d++) s.AddByPrefix(d.ToString(), d + " small");
+                s.Play(sep[ind].ToString());
+                tl.Digits.Add(s);
+            }
+            else { tl.Digits[ind].Play(sep[ind].ToString()); tl.Digits[ind].Color = tl.Flavour; }
+        }
+    }
+
+    // ===================================================================== ClearPercentCounter
+    private void DrawClearNumbers(ClearCounter c)
+    {
+        c.Changed = false;
+        var sep = new List<int>();
+        int temp = c.Cur;
+        while (temp > 0) { sep.Add(temp % 10); temp /= 10; }
+        if (sep.Count == 0) sep.Add(0);
+        sep.Reverse();
+        for (int ind = 0; ind < sep.Count; ind++)
+        {
+            int digitIndex = ind + 1;
+            int digitOffset = sep.Count == 1 ? 1 : sep.Count == 3 ? -1 : 0;
+            float size = c.Small ? 32 : 72, hOff = c.Small ? -4 : 0;
+            float xPos = (digitIndex - 1 + digitOffset) * size + (c.Small ? -24 : 0);
+            float yPos = (digitIndex - 1 + digitOffset) * hOff + (c.Small ? 0 : 72);
+            // members[0] is the "%" text: a new digit member is created when digitIndex >= members.length
+            if (digitIndex >= c.Digits.Count + 1)
+            {
+                bool variant = sep.Count == 3 ? digitIndex >= 2 : digitIndex >= 1;
+                var sheet = c.Small ? _cpSmall : variant ? _cpRight : _cpLeft;
+                var s = new Spr { Sheet = sheet, Pos = new Vector2(c.X + xPos, c.Y + yPos) };
+                for (int d = 0; d < 10; d++) s.AddByPrefix(d.ToString(), $"number {d} 0");
+                s.Play(sep[ind].ToString());
+                c.Digits.Add((s, variant));
+            }
+            else
+            {
+                var s = c.Digits[digitIndex - 1].s;
+                s.Play(sep[ind].ToString());
+                s.Pos = new Vector2(xPos + c.X, yPos + c.Y);
+                s.Visible = true;
+            }
+        }
+        // members[len+1 ..] hidden (note: index offset as in the original)
+        for (int ind = sep.Count + 1; ind < c.Digits.Count + 1; ind++) c.Digits[ind - 1].s.Visible = false;
+        c.LastX = c.X; c.LastY = c.Y;
+    }
+
+    // ===================================================================== update
+    public override void Update(GameTime gameTime)
+    {
+        float dt = Math.Min((float)gameTime.ElapsedGameTime.TotalSeconds, 0.1f);
+        _t += dt; _dt = dt; _frameNo++;
+
+        // timers (FlxTimerManager plugin), then tweens (FlxTweenManager plugin)
+        {
+            var looped = new List<FTimer>();
+            foreach (var tm in _timers.ToList())
+            {
+                if (tm.Finished || tm.Frame >= _frameNo) continue;
+                int before = tm.LoopsCounter;
+                tm.Counter += dt;
+                while (tm.Counter >= tm.Time && !tm.Finished)
+                {
+                    tm.Counter -= tm.Time; tm.LoopsCounter++;
+                    if (tm.Loops > 0 && tm.LoopsCounter >= tm.Loops) tm.Finished = true;
+                }
+                if (tm.LoopsCounter != before) looped.Add(tm);
+            }
+            _inTimers = true;
+            foreach (var tm in looped) { if (tm.Finished) _timers.Remove(tm); tm.Cb(tm); }
+            _inTimers = false;
+        }
+        foreach (var tw in _tweens.ToList())
+        {
+            if (tw.Dead || _t < tw.Start) continue;
+            float k = tw.Dur <= 0 ? 1f : Math.Clamp((_t - tw.Start) / tw.Dur, 0f, 1f);
+            tw.Apply?.Invoke(tw.Ease(k));
+            if (k >= 1f) { tw.Dead = true; tw.Done?.Invoke(); }
+        }
+        _tweens.RemoveAll(x => x.Dead);
+
+        // movingSongStuff
+        if (_moving)
+        {
+            float sx = _speedX * 60f * dt, sy = _speedY * 60f * dt;
+            _songX += sx; _diffX += sx; _cpSmallCounter.X += sx;
+            _songY += sy; _diffY += sy; _cpSmallCounter.Y += sy;
+            if (_songX + _songW < 100) TimerThenSongName(3.0f, true);
+        }
+
+        // sprites
+        _soundSystem.Update(dt); _resultsAnim.Update(dt); _ratingsPopin.Update(dt); _scorePopin.Update(dt); _highscoreNew.Update(dt);
+        foreach (var n in _scoreNums) n.S.Update(dt);
+        foreach (var c in _chars) { c.atlas?.Update(dt); c.spr?.Update(dt); }
+        if (int.TryParse(Environment.GetEnvironmentVariable("FNF_RES_FRAME"), out int devFrame))
+            foreach (var c in _chars) if (c.atlas != null && c.atlas.Visible && c.atlas.Frames != null) { c.atlas.Index = Math.Min(devFrame, c.atlas.Frames.Length - 1); c.atlas.Paused = true; }
+        // dev hook FNF_RES_FRAMESTEP="start,first,last,interval": from <start> s freeze the character atlases on frame first + floor((t-start)/interval)
+        { var fsArr = Environment.GetEnvironmentVariable("FNF_RES_FRAMESTEP")?.Split(','); if (fsArr != null && fsArr.Length == 4) { var ci = System.Globalization.CultureInfo.InvariantCulture; float st = float.Parse(fsArr[0], ci), iv = float.Parse(fsArr[3], ci); int f0 = int.Parse(fsArr[1]), f1 = int.Parse(fsArr[2]);
+          if (_t >= st) { int fr = Math.Min(f1, f0 + (int)((_t - st) / iv)); foreach (var c in _chars) if (c.atlas != null && c.atlas.Visible && c.atlas.Frames != null) { c.atlas.Index = Math.Min(fr, c.atlas.Frames.Length - 1); c.atlas.Paused = true; } } } }
+        if (Environment.GetEnvironmentVariable("FNF_RESLOG") == "2") Console.WriteLine($"[RESFRAME] {DevDump}");
+        if (Environment.GetEnvironmentVariable("FNF_RESLOG") == "1" && _t - _devLogT >= 0.1f) { _devLogT = _t; Console.WriteLine($"[RESLOG] t={_t:F3} {DevInfo}"); }
+        foreach (var tl in _tallies) { if (tl.Cur < tl.Need) DrawTallyNumbers(tl); foreach (var d in tl.Digits) d.Update(dt); }
+        foreach (var c in new[] { _cpBig, _cpSmallCounter })
+        {
+            if (c == null) continue;
+            if (c.Changed) DrawClearNumbers(c);
+            else if (c.X != c.LastX || c.Y != c.LastY)
+            {
+                // FlxSpriteGroup position setter moves every member by the delta
+                float dx = c.X - c.LastX, dy = c.Y - c.LastY;
+                foreach (var d in c.Digits) d.s.Pos += new Vector2(dx, dy);
+                c.LastX = c.X; c.LastY = c.Y;
+            }
+        }
+        if (_rankTextShown)
+        {
+            _rankVertY += _rankVertVy * dt;
+            for (int i = 0; i < 12; i++) _rankRowX[i] += _rankRowVx[i] * dt;
+        }
+
+        // music fade on exit (tween volume 0 over 0.8 s)
+        if (_musicFading)
+        {
+            _musicFadeT += dt;
+            _musicVol = Math.Max(0f, 1f - _musicFadeT / 0.8f);
+            Audio.MusicVolume = HighscoreManager.Data.MusicVolume * _musicVol;
+            if (_musicFadeT >= 0.8f) { _musicFading = false; Audio.StopMusic(); }
+        }
+
+        if (UpdateReplayPrompt()) return; // R / Y: watch the replay of this play (ResultsScene.Replay.cs)
+        if ((Input.ConfirmPressed || Input.IsPressed(Microsoft.Xna.Framework.Input.Keys.Escape)
+             || Input.IsGamePadPressed(Microsoft.Xna.Framework.Input.Buttons.Start)) && !_busy)
+            BeginExit();
+        if (!_busy && _devExitAt >= 0f && _t >= _devExitAt) BeginExit(); // dev hook FNF_RES_EXIT_AT=<s>
+    }
+    private static readonly float _devExitAt = float.TryParse(Environment.GetEnvironmentVariable("FNF_RES_EXIT_AT"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var __ea) ? __ea : -1f;
+
+    private void BeginExit()
+    {
+        _busy = true;
+        _musicFading = true; _musicFadeT = 0f;
+
+        if (_isStoryMode) { SwitchOut(); return; }
+        string oldRankString = HasPrevRank ? PrevRankString : HighscoreManager.GetRank(_songName, _difficultyId);
+        ScoringRank? oldRank = null;
+        if (!string.IsNullOrEmpty(oldRankString) && Enum.TryParse<ScoringRank>(oldRankString, out var parsed)) oldRank = parsed;
+        bool valid = !IsPracticeMode && !IsBotPlayMode;
+        // ScoringRank enum here is ordered best-first: "rank > prevRank" == smaller ordinal
+        bool personalBest = oldRank == null || (int)_rank < (int)oldRank.Value;
+        if (valid && personalBest)
+            TweenF(0.5f, ExpoOut, k => _rankBgAlpha = k, 0f, () => SwitchOut(oldRank));
+        else SwitchOut(oldRank, false);
+    }
+
+    private void SwitchOut(ScoringRank? oldRank = null, bool playRankAnim = true)
+    {
+        // ResultState.transitionToState: personal best -> FlxG.switchState(FreeplayState.build(fromResults)) right after the
+        // rankBg tween (no fade); story mode / no new best -> StickerSubState, then StoryMenuState / FreeplayState(stickers).
+        if (!_isStoryMode && !IsBotPlayMode && !IsPracticeMode) // never save botplay/practice clears (PlayState.endSong)
+            HighscoreManager.SaveScore(_songName, _difficultyId, _score, _maxCombo, _totalNotes == 0 ? 0f : Math.Clamp((_tallySick + _tallyGood - _tallyMissed) / (float)_totalNotes, 0f, 1f), _rank.ToString());   // exact tallyCompletion (was the floored %)
+        // no new best: FreeplayState.build(null, sticker) -> no fromResults params, forceSkipIntro
+        Func<Scene> target = _isStoryMode
+            ? () => new StoryModeScene()
+            : !playRankAnim ? () => new FreeplayScene { ForceSkipIntro = true }
+            : () => new FreeplayScene(new FreeplayResultParams
+              {
+                  SongId = _songName, DifficultyId = _difficultyId, OldRank = oldRank, NewRank = _rank, PlayRankAnim = playRankAnim
+              });
+        if (!_isStoryMode && playRankAnim)
+        {
+            Audio.MusicVolume = HighscoreManager.Data.MusicVolume;
+            Game.Scenes.SwitchSceneInstant(target());
+            return;
+        }
+        string pack = StickerTransition.ResolvePackId(Assets, _songName, (_playerId == "pico" ? "pico-playable" : "bf"));
+        StickerTransition.Start(Game.Scenes, Assets, n => Audio.PlaySound(n), pack, () =>
+        {
+            Audio.MusicVolume = HighscoreManager.Data.MusicVolume;
+            return target();
+        });
+    }
 
     public override void Unload()
     {
-        // Restore music volume in case it was faded during exit
         Audio.MusicVolume = HighscoreManager.Data.MusicVolume;
-        _gradientBG?.Dispose();
-        _bgFlashTex?.Dispose();
-        
-        // Dispose all spritesheets (GPU resources)
-        _resultsAnim?.Sheet?.Dispose();
-        _soundSystemAnim?.Sheet?.Dispose();
-        _ratingsPopin?.Sheet?.Dispose();
-        _scorePopin?.Sheet?.Dispose();
-        _highscoreNewAnim?.Sheet?.Dispose();
-        _characterResultAnim?.Sheet?.Dispose();
-        _gfResultAnim?.Sheet?.Dispose();
-        _heartsResultAnim?.Sheet?.Dispose();
-        _tallieNumberSheet?.Dispose();
-        _scoreDigitalSheet?.Dispose();
-        _clearPercentLeftSheet?.Dispose();
-        _clearPercentRightSheet?.Dispose();
-        _clearPercentSmallSheet?.Dispose();
+        _bgTex?.Dispose(); _bgFlashTex?.Dispose(); _topBarTex?.Dispose();
+        foreach (var w in _whiteTex.Values) w.Dispose();
+        foreach (var w in _premulTex.Values) w.Dispose();
     }
 
-    public override void Update(GameTime gameTime)
+    // ===================================================================== draw
+    public override void Draw(SpriteBatch sb)
     {
-        float dt = (float)gameTime.ElapsedGameTime.TotalSeconds;
-        _timer += dt;
+        var gd = Game.GraphicsDevice;
+        gd.Clear(Color.Magenta);
 
-        // === BG flash fade (rate depends on context: 5/24s for tally start, 14/24s for rank display) ===
-        if (_bgFlashVisible && _bgFlashAlpha > 0)
+        // cameraBG
+        sb.Begin(SpriteSortMode.Deferred, BlendState.NonPremultiplied, SamplerState.LinearClamp);
+        sb.Draw(_bgTex, new Rectangle(0, 0, 1280, 720), Color.White);
+        sb.End();
+
+        // cameraScroll (1280 x 864, canvas.rotation = -3.8 about the camera's top-left): 12 FlxBackdrop rows (X, spacing 10).
+        // Textures FromStream are straight alpha with black transparent texels: filtered (rotated / sub-pixel) draws use
+        // premultiplied copies + AlphaBlend like OpenFL, otherwise the edges get dark fringes.
+        if (_rankTextShown && _rankHorTex != null)
         {
-            float fadeRate = _bgFlashFadeDuration > 0 ? 1f / _bgFlashFadeDuration : (24f / 5f);
-            _bgFlashAlpha = Math.Max(0, _bgFlashAlpha - dt * fadeRate);
-            if (_bgFlashAlpha <= 0) _bgFlashVisible = false;
-        }
-
-        // === Top bar slide (3/24s delay, then slide over 7/24s, quartOut) ===
-        if (_timer >= 3f / 24f)
-        {
-            float slideElapsed = _timer - (3f / 24f);
-            float slideDuration = 7f / 24f;
-            float t = Math.Clamp(slideElapsed / slideDuration, 0f, 1f);
-            t = QuartOut(t);
-            _topBarY = -_topBarHeight + _topBarHeight * t;
-        }
-
-        // === "RESULTS" anim at 6/24s ===
-        if (!_resultsVisible && _timer >= 6f / 24f)
-        {
-            _resultsVisible = true;
-        }
-        if (_resultsVisible && _resultsAnim != null)
-            _resultsAnim.Update(dt);
-
-        // === Sound system at 8/24s ===
-        if (!_soundSystemVisible && _timer >= 8f / 24f)
-            _soundSystemVisible = true;
-        if (_soundSystemVisible && _soundSystemAnim != null)
-            _soundSystemAnim.Update(dt);
-
-        // === Ratings popin at 21/24s ===
-        if (!_ratingsVisible && _timer >= 21f / 24f)
-            _ratingsVisible = true;
-        if (_ratingsVisible && _ratingsPopin != null)
-            _ratingsPopin.Update(dt);
-
-        // === Score popin at 36/24s ===
-        if (!_scoreVisible && _timer >= 36f / 24f)
-            _scoreVisible = true;
-        if (_scoreVisible && _scorePopin != null)
-            _scorePopin.Update(dt);
-
-        // === Score digits + tally counters start at 37/24s ===
-        if (_timer >= 37f / 24f)
-        {
-            // Show score digits
-            if (!_scoreDigitsVisible)
-            {
-                _scoreDigitsVisible = true;
-                _scoreDigitTimer = 0;
-            }
-
-            // Start clear percent tally sequence (startRankTallySequence)
-            if (!_clearPercentActive)
-            {
-                _clearPercentActive = true;
-                _clearPercentTimer = 0;
-                // BG flash on start (original: bgFlash.visible = true, tween alpha?0 over 5/24)
-                _bgFlashVisible = true;
-                _bgFlashAlpha = 1f;
-                _bgFlashFadeDuration = 5f / 24f;
-            }
-        }
-
-        // === Tally counters: each visible at (0.3*index)+1.20s ===
-        if (_tallies != null)
-        {
-            for (int i = 0; i < _tallies.Length; i++)
-            {
-                float revealTime = (0.3f * i) + 1.20f;
-                if (!_tallies[i].Visible && _timer >= revealTime)
-                {
-                    _tallies[i].Visible = true;
-                    _tallies[i].TweenStarted = true;
-                    _tallies[i].TweenTimer = 0;
-                }
-                if (_tallies[i].TweenStarted)
-                {
-                    _tallies[i].TweenTimer += dt;
-                    float tt = Math.Clamp(_tallies[i].TweenTimer / 0.5f, 0f, 1f);
-                    tt = QuartOut(tt);
-                    _tallies[i].CurrentValue = _tallies[i].TargetValue * tt;
-                }
-            }
-        }
-
-        // === Score digit shuffle animation ===
-        if (_scoreDigitsVisible)
-        {
-            _scoreDigitTimer += dt;
-            int scoreStart = 0;
-            // Find first non-disabled digit
-            for (int i = 0; i < _scoreDigitCount; i++)
-            {
-                if (_scoreTargetDigits[i] != 10) { scoreStart = i; break; }
-                if (i == _scoreDigitCount - 1) scoreStart = _scoreDigitCount;
-            }
-
-            for (int i = scoreStart; i < _scoreDigitCount; i++)
-            {
-                float digitDelay = (i - 1) / 24f;
-                if (_scoreDigitTimer >= digitDelay && !_scoreDigitShuffling[i] && !_scoreDigitDone[i]
-                    && !_scoreDigitTweening[i])
-                {
-                    _scoreDigitShuffling[i] = true;
-                    _scoreDigitShuffleTimers[i] = 0;
-                }
-                if (_scoreDigitShuffling[i])
-                {
-                    _scoreDigitShuffleTimers[i] += dt;
-                    float shuffleDuration = 41f / 24f;
-                    float shuffleInterval = 1f / 24f;
-                    // Original: FlxTimer.start(interval, shuffleProgress, loops)
-                    // Each tick increments digit by 1, wrapping 9->0
-                    int tickCount = (int)(_scoreDigitShuffleTimers[i] / shuffleInterval);
-                    _scoreCurrentDigits[i] = tickCount % 10;
-
-                    if (_scoreDigitShuffleTimers[i] >= shuffleDuration)
-                    {
-                        // Start tween to final digit over 23/24s (quadOut)
-                        _scoreDigitShuffling[i] = false;
-                        _scoreDigitTweening[i] = true;
-                        _scoreDigitTweenTimers[i] = 0;
-                        _scoreCurrentDigits[i] = 0; // tween from 0 to finalDigit
-                    }
-                }
-                // Score digit tween: 0 ? finalDigit over 23/24s quadOut
-                if (_scoreDigitTweening[i])
-                {
-                    _scoreDigitTweenTimers[i] += dt;
-                    float tweenDuration = 23f / 24f;
-                    float tt = Math.Clamp(_scoreDigitTweenTimers[i] / tweenDuration, 0f, 1f);
-                    tt = QuadOut(tt);
-                    _scoreCurrentDigits[i] = _scoreTargetDigits[i] * tt;
-                    int digitRounded = (int)Math.Floor(_scoreCurrentDigits[i]);
-                    if (digitRounded > 9) digitRounded = 9;
-                    if (digitRounded < 0) digitRounded = 0;
-
-                    if (_scoreDigitTweenTimers[i] >= tweenDuration)
-                    {
-                        _scoreDigitTweening[i] = false;
-                        _scoreDigitDone[i] = true;
-                        _scoreCurrentDigits[i] = _scoreTargetDigits[i];
-                        // Original: finalDelay = scoreStart - (i - 1)
-                        // scoreStart is count of active digits (not index), so finalDelay
-                        // is always negative or 0 for typical scores, meaning glow replays immediately.
-                        // In HaxeFlixel, FlxTimer.start with negative duration fires immediately.
-                        _scoreDigitGlow[i] = true;
-                    }
-                }
-            }
-        }
-
-        // === Clear percent tween (58/24s duration, quartOut) ===
-        if (_clearPercentActive && !_clearPercentDone)
-        {
-            _clearPercentTimer += dt;
-            float duration = 58f / 24f;
-            float t = Math.Clamp(_clearPercentTimer / duration, 0f, 1f);
-            t = QuartOut(t);
-
-            float startVal = Math.Max(0, _clearPercentTarget - 36);
-            float newVal = startVal + (_clearPercentTarget - startVal) * t;
-            int newRounded = (int)Math.Round(newVal);
-
-            // Play tick sound on each increment (original: FunkinSound.playOnce, default volume 1.0)
-            if (newRounded != (int)Math.Round(_clearPercentCurrent))
-            {
-                Audio.PlaySound("scrollMenu", 1.0f);
-            }
-            _clearPercentCurrent = newVal;
-
-            if (_clearPercentTimer >= duration)
-            {
-                _clearPercentDone = true;
-                _clearPercentCurrent = _clearPercentTarget;
-                Audio.PlaySound("confirmMenu");
-
-                // Flash white
-                _clearPercentFlashing = true;
-                _clearPercentFlashTimer = 0;
-            }
-        }
-
-        // === Clear percent flash (0.4s white flash, then fade over 0.5s after 0.25s delay) ===
-        if (_clearPercentFlashing)
-        {
-            _clearPercentFlashTimer += dt;
-            if (_clearPercentFlashTimer >= 0.4f)
-                _clearPercentFlashing = false;
-        }
-        if (_clearPercentDone && !_clearPercentFading)
-        {
-            // Original: new FlxTimer().start(0.25, ...) after confirmMenu
-            // Use clearPercentFlashTimer as post-completion elapsed tracker
-            if (_clearPercentFlashTimer >= 0.25f)
-            {
-                _clearPercentFading = true;
-                _clearPercentFadeTimer = 0;
-            }
-        }
-        if (_clearPercentFading)
-        {
-            _clearPercentFadeTimer += dt;
-            float fadeDelay = 0.5f;
-            float fadeDuration = 0.5f;
-            if (_clearPercentFadeTimer >= fadeDelay)
-            {
-                float ft = Math.Clamp((_clearPercentFadeTimer - fadeDelay) / fadeDuration, 0f, 1f);
-                ft = QuartOut(ft);
-                _clearPercentAlpha = 1f - ft;
-            }
-        }
-
-        // === Music at getMusicDelay() ===
-        if (!_musicStarted && _timer >= GetMusicDelay())
-        {
-            _musicStarted = true;
-            string musicPath = GetResultsMusicPath();
-            // Original: plays intro first (music/path/path-intro), then chains to loop (music/path/path)
-            string introPath = $"music/{musicPath}/{musicPath}-intro";
-            string loopPath = $"music/{musicPath}/{musicPath}";
-            string directPath = $"music/{musicPath}";
-            // Try intro+loop chaining first
-            Audio.PlayMusicWithIntro(introPath, loopPath);
-            // If that didn't find anything, try direct path
-            if (!Audio.MusicPlaying)
-                Audio.PlayMusic(directPath, true);
-        }
-
-        // === Rank text backdrop at getFlashDelay() (displayRankText) ===
-        if (!_rankTextVisible && _timer >= GetFlashDelay())
-        {
-            _rankTextVisible = true;
-            _rankTextTimer = 0;
-            _rankVertFlickerTimer = 0;
-            _rankVertFlickerDone = false;
-            // BG flash with 14/24s fade (original: FlxTween alpha?0 over 14/24)
-            _bgFlashVisible = true;
-            _bgFlashAlpha = 1f;
-            _bgFlashFadeDuration = 14f / 24f;
-            _rankVertScrollDelay = 30f / 24f;
-        }
-        if (_rankTextVisible)
-        {
-            _rankTextTimer += dt;
-            // Vertical text flicker: FlxFlicker(rankTextVert, 2/24*3, 2/24, true)
-            // Duration = 0.25s, period = 0.083s — toggles visibility on/off
-            if (!_rankVertFlickerDone)
-            {
-                _rankVertFlickerTimer += dt;
-                if (_rankVertFlickerTimer >= (2f / 24f * 3f))
-                    _rankVertFlickerDone = true;
-            }
-            // Horizontal rows scroll at velocity ±7 pixels/second (FlxBackdrop velocity.x)
+            var m = Matrix.CreateRotationZ(MathHelper.ToRadians(-3.8f));
+            sb.Begin(SpriteSortMode.Deferred, BlendState.AlphaBlend, SamplerState.LinearClamp, null, null, null, m);
+            var tex = Premul(_rankHorTex);
+            float step = _rankHorTex.Width + 10;
             for (int i = 0; i < 12; i++)
             {
-                float vel = (i % 2 == 0) ? -7f : 7f;
-                _rankRowOffsets[i] += vel * dt;
+                float y = 50 + (135 * i / 2f) + 10;
+                float x0 = _rankRowX[i] % step; if (x0 > 0) x0 -= step;
+                for (float x = x0; x < 1280; x += step) sb.Draw(tex, new Vector2(x, y), Color.White);
             }
-            // Vertical scroll starts after 30/24s delay
-            if (_rankVertScrollDelay > 0)
+            sb.End();
+        }
+
+        // cameraEverything, zIndex order
+        sb.Begin(SpriteSortMode.Deferred, BlendState.NonPremultiplied, SamplerState.LinearClamp);
+        if (_bgFlashVisible && _bgFlashAlpha > 0 && HighscoreManager.Data.FlashingLights)
+            sb.Draw(_bgFlashTex, new Rectangle(0, 0, 1280, 720), new Color(Color.White, _bgFlashAlpha));
+        sb.End();
+        sb.Begin(SpriteSortMode.Deferred, BlendState.AlphaBlend, SamplerState.LinearClamp);
+        if (_cpBig != null && !_cpBig.Removed) DrawClearCounter(sb, _cpBig);
+        sb.End();
+
+        // characters (zIndex 499-501) - atlas parts need their own batches
+        foreach (var c in _chars.OrderBy(c => c.z).ThenBy(c => c.order))
+        {
+            if (c.atlas != null) { if (c.atlas.Visible) c.atlas.A.Draw(sb, c.atlas.TimelineFrame, c.atlas.Pos, c.atlas.Scale, Premul); }
+            else if (c.spr != null && c.spr.Visible)
             {
-                _rankVertScrollDelay -= dt;
-            }
-            else if (!_rankVertScrolling)
-            {
-                _rankVertScrolling = true;
-            }
-            if (_rankVertScrolling)
-                _rankVertOffset -= 80f * dt;
-        }
-
-        // === Highscore NEW at getHighscoreDelay() ===
-        if (!_highscoreNewVisible && _isNewHighscore && _timer >= GetHighscoreDelay())
-        {
-            _highscoreNewVisible = true;
-        }
-        if (_highscoreNewVisible && _highscoreNewAnim != null)
-            _highscoreNewAnim.Update(dt);
-
-        // === afterRankTallySequence at getBFDelay() ===
-        if (!_afterRankSequenceStarted && _timer >= GetBFDelay())
-        {
-            _afterRankSequenceStarted = true;
-            _afterRankTimer = 0;
-            // showSmallClearPercent()
-            _smallClearPercentVisible = true;
-            _smallClearPercentFlashing = true;
-            _smallClearPercentFlashTimer = 0;
-        }
-        if (_afterRankSequenceStarted)
-        {
-            _afterRankTimer += dt;
-            // Small clear percent flash lasts 0.4s
-            if (_smallClearPercentFlashing)
-            {
-                _smallClearPercentFlashTimer += dt;
-                if (_smallClearPercentFlashTimer >= 0.4f)
-                    _smallClearPercentFlashing = false;
-            }
-            // After 2.5s, start scrolling song stuff (original: showSmallClearPercent's timer)
-            // Note: speed was already ramped to target by first timerThenSongName(1.0, false)
-            if (_afterRankTimer >= 2.5f && !_songNameMoving)
-            {
-                _songNameMoving = true;
-                // Do NOT reset speed here — it's already at target from initial timerThenSongName
+                sb.Begin(SpriteSortMode.Deferred, BlendState.NonPremultiplied, SamplerState.LinearClamp);
+                DrawSpr(sb, c.spr);
+                sb.End();
             }
         }
 
-        // === Song name tween into top bar (timerThenSongName) ===
-        if (!_songNameTweenedIn && _timer >= _songNameMoveDelay)
+        sb.Begin(SpriteSortMode.Deferred, BlendState.AlphaBlend, SamplerState.LinearClamp);
+        // rankTextVert (990): FlxBackdrop(Y, spacingY 30)
+        if (_rankTextShown && _rankVertVisible && _rankVerTex != null)
         {
-            _songNameTweenedIn = true;
-            _songNameTweenTimer = 0;
-            // The timerLength starts here. After it expires, speedOfTween starts ramping
-            // and movingSongStuff = autoScroll
-            _songNameScrollStartDelay = _songNameAutoScroll ? 3.0f : 1.0f;
+            var tex = Premul(_rankVerTex);
+            float step = _rankVerTex.Height + 30;
+            float y0 = _rankVertY % step; if (y0 > 0) y0 -= step;
+            for (float y = y0; y < 720; y += step) sb.Draw(tex, new Vector2(_rankVertX, y), Color.White);
         }
-        if (_songNameTweenedIn)
+        // difficulty (LeftMaskShader: hide texels left of screen x 525), songName, clearPercentSmall (1000)
+        if (_diffTex != null)
         {
-            _songNameTweenTimer += dt;
-            // Difficulty tweens to y=122+(barHeight-148) over 0.5s, expoOut, startDelay 0.8
-            float diffDelay = 0.8f;
-            float diffTargetY = 122f + (_topBarHeight - 148);
-            if (_songNameTweenTimer >= diffDelay)
-            {
-                float t = Math.Clamp((_songNameTweenTimer - diffDelay) / 0.5f, 0f, 1f);
-                t = ExpoOut(t);
-                _difficultyY = -50 + (diffTargetY + 50) * t;
-            }
-            // Small clear percent: x = difficulty.x + diffWidth + 60, tweens to y = 122-5+(barHeight-148)
-            // Only update X from difficulty during initial tween-in, not while scrolling
-            int diffWidth = _difficultyTex != null ? _difficultyTex.Width : 80;
-            if (!_songNameMoving)
-                _smallClearPercentX = _difficultyX + diffWidth + 60;
-            if (_songNameTweenTimer >= 0.85f)
-            {
-                float t = Math.Clamp((_songNameTweenTimer - 0.85f) / 0.5f, 0f, 1f);
-                t = ExpoOut(t);
-                float cpTargetY = (122f - 5f) + (_topBarHeight - 148);
-                _smallClearPercentY = -30 + (cpTargetY + 30) * t;
-            }
-            // Song name tweens to position over 0.5s, expoOut, startDelay 0.9
-            // songName.x = clearPercentSmall.x + 94 (set once in original timerThenSongName)
-            float nameDelay = 0.9f;
-            int songNameWidth2 = string.IsNullOrEmpty(_songName) ? 200
-                : _songName.Length * (FONT_CHAR_W + FONT_LETTER_SPACING);
-            float fuckedupnumber = -(songNameWidth2 * 0.5f) * MathF.Sin(SONG_NAME_ANGLE * MathF.PI / 180f) - 10;
-            float nameTargetY = diffTargetY - 25 - fuckedupnumber;
-            // Only set songNameX from clearPercentSmall during initial tween-in, not while scrolling
-            if (!_songNameMoving)
-                _songNameX = _smallClearPercentX + 94;
-            if (_songNameTweenTimer >= nameDelay)
-            {
-                float t = Math.Clamp((_songNameTweenTimer - nameDelay) / 0.5f, 0f, 1f);
-                t = ExpoOut(t);
-                _songNameY = -50 + (nameTargetY + 50) * t;
-            }
-
-            // After timerLength delay: start speed ramp (for all calls)
-            // and enable scrolling only if autoScroll
-            if (!_speedTweenStartedForCurrentCycle
-                && _songNameTweenTimer >= _songNameScrollStartDelay)
-            {
-                _speedTweenStartedForCurrentCycle = true;
-                _speedOfTweenCurrentX = 0;
-                _speedOfTweenCurrentY = 0;
-                _speedTweenActive = true;
-                _speedTweenTimer = 0;
-
-                if (_songNameAutoScroll)
-                    _songNameMoving = true;
-            }
+            int cut = (int)Math.Clamp(MathF.Ceiling(525 - _diffX), 0, _diffTex.Width);
+            if (cut < _diffTex.Width)
+                sb.Draw(Premul(_diffTex), new Vector2(_diffX + cut, _diffY), new Rectangle(cut, 0, _diffTex.Width - cut, _diffTex.Height), Color.White);
         }
+        DrawSongName(sb);
+        if (_cpSmallAdded) DrawClearCounter(sb, _cpSmallCounter, clipX: 520);
+        sb.End();
 
-        // === Speed ramp-up tween (original: speedOfTween starts at 0, tweens to target over 0.7s quadIn) ===
-        if (_speedTweenActive)
-        {
-            _speedTweenTimer += dt;
-            float st = Math.Clamp(_speedTweenTimer / 0.7f, 0f, 1f);
-            st = QuadIn(st);
-            _speedOfTweenCurrentX = _speedOfTweenTargetX * st;
-            _speedOfTweenCurrentY = _speedOfTweenTargetY * st;
-        }
-
-        // === Song name + difficulty + clearPercentSmall scrolling ===
-        if (_songNameMoving)
-        {
-            float speedX = _speedOfTweenCurrentX * 60f * dt;
-            float speedY = _speedOfTweenCurrentY * 60f * dt;
-            _songNameX += speedX;
-            _difficultyX += speedX;
-            _smallClearPercentX += speedX;
-            _songNameY += speedY;
-            _difficultyY += speedY;
-            _smallClearPercentY += speedY;
-
-            // Estimate song name width for scroll reset check
-            int songNameWidth = string.IsNullOrEmpty(_songName) ? 200
-                : _songName.Length * (FONT_CHAR_W + FONT_LETTER_SPACING);
-            if (_songNameX + songNameWidth < 100)
-            {
-                // timerThenSongName(3.0, true) — reset and loop
-                _songNameMoving = false;
-                _speedTweenActive = false;
-                _speedTweenStartedForCurrentCycle = false;
-                _difficultyX = 555;
-                _difficultyY = -50;
-                _songNameY = -50;
-                _smallClearPercentY = -30;
-                _songNameTweenedIn = false;
-                _songNameTweenTimer = 0;
-                _songNameAutoScroll = true; // subsequent loops auto-scroll
-                _songNameMoveDelay = _timer; // start tween-in immediately
-            }
-        }
-
-        // === Character result animation at getBFDelay() ===
-        if (!_characterResultVisible && _characterResultAnim != null
-            && _timer >= GetBFDelay())
-        {
-            _characterResultVisible = true;
-        }
-        if (_characterResultVisible && _characterResultAnim != null)
-            _characterResultAnim.Update(dt);
-
-        // GF result animation (for GREAT rank delay 0.25s, GOOD rank delay 0.91s)
-        float gfDelay = (_rank == ScoringRank.GOOD) ? 0.91f : 0.25f;
-        if (!_gfResultVisible && _gfResultAnim != null
-            && _timer >= GetBFDelay() + gfDelay)
-        {
-            _gfResultVisible = true;
-        }
-        if (_gfResultVisible && _gfResultAnim != null)
-            _gfResultAnim.Update(dt);
-
-        // Hearts result animation (PERFECT rank, delay 4.41s after BF delay)
-        if (!_heartsResultVisible && _heartsResultAnim != null
-            && _timer >= GetBFDelay() + 4.41f)
-        {
-            _heartsResultVisible = true;
-        }
-        if (_heartsResultVisible && _heartsResultAnim != null)
-            _heartsResultAnim.Update(dt);
-
-        // === Music volume fade on exit ===
-        if (_musicFading)
-        {
-            _musicFadeTimer += dt;
-            float vol = Math.Max(0, 1f - _musicFadeTimer / 0.8f);
-            Audio.MusicVolume = vol;
-            if (vol <= 0)
-            {
-                _musicFading = false;
-                Audio.StopMusic();
-            }
-        }
-
-        // === Exit transition (fade to black then switch scene) ===
-        if (_exiting)
-        {
-            _exitTimer += dt;
-            _rankBgAlpha = Math.Clamp(_exitTimer / 0.8f, 0f, 1f);
-            if (_exitTimer >= 1.0f)
-            {
-                _exiting = false; // Prevent calling ChangeScene every frame
-                // Restore music volume before switching scene
-                Audio.MusicVolume = HighscoreManager.Data.MusicVolume;
-                // Return to the correct scene based on how we got here
-                if (_isStoryMode)
-                    Game.Scenes.ChangeScene(new StoryModeScene());
-                else
-                    Game.Scenes.ChangeScene(new FreeplayScene());
-            }
-        }
-
-        // === Input (original: controls.PAUSE_P || controls.ACCEPT_P) ===
-        if ((Input.ConfirmPressed || Input.BackPressed) && !_busy)
-        {
-            _busy = true;
-            _exiting = true;
-            _exitTimer = 0;
-            // Original: tween music volume?0 over 0.8s, pitch 3?0.5 warp
-            _musicFading = true;
-            _musicFadeTimer = 0;
-        }
+        sb.Begin(SpriteSortMode.Deferred, BlendState.NonPremultiplied, SamplerState.LinearClamp);
+        // blackTopBar (1010)
+        sb.Draw(_topBarTex, new Vector2(0, _topBarY), Color.White);
+        // soundSystem (1100)
+        DrawSpr(sb, _soundSystem);
+        // 1200: resultsAnim, ratingsPopin, scorePopin, highscoreNew, ratingGrp, score
+        DrawSpr(sb, _resultsAnim); DrawSpr(sb, _ratingsPopin); DrawSpr(sb, _scorePopin); DrawSpr(sb, _highscoreNew);
+        foreach (var tl in _tallies) if (tl.Visible) foreach (var d in tl.Digits) DrawSpr(sb, d);
+        if (_scoreVisible) foreach (var n in _scoreNums) DrawSpr(sb, n.S);
+        if (_rankBgAlpha > 0) sb.Draw(Assets.Pixel, new Rectangle(0, 0, 1280, 720), new Color(Color.Black, _rankBgAlpha));
+        sb.End();
+        DrawReplayPrompt(sb);
     }
 
-    public override void Draw(SpriteBatch spriteBatch)
+    private void DrawSpr(SpriteBatch sb, Spr s, float groupAlpha = 1f, float clipX = float.NegativeInfinity, bool premul = false)
     {
-        // Enable scissor test to clip all drawing to screen bounds
-        var prevScissor = Game.GraphicsDevice.ScissorRectangle;
-        Game.GraphicsDevice.ScissorRectangle = new Rectangle(0, 0, FNFGame.SCREEN_WIDTH, FNFGame.SCREEN_HEIGHT);
-        var rastState = new RasterizerState { ScissorTestEnable = true };
-        spriteBatch.Begin(samplerState: SamplerState.PointClamp, blendState: BlendState.NonPremultiplied, rasterizerState: rastState);
-
-        // === 1. Background gradient (zIndex 10) ===
-        DrawGradientBackground(spriteBatch);
-
-        // === 2. BG flash overlay (zIndex 20) — guarded by flashing lights preference ===
-        if (_bgFlashVisible && _bgFlashAlpha > 0 && Engine.HighscoreManager.Data.FlashingLights)
+        if (s == null || !s.Visible) return;
+        var f = s.CurFrame;
+        if (f == null) return;
+        var tex = f.Texture ?? s.Sheet.Texture;
+        if (s.White) tex = WhiteOf(tex); else if (premul) tex = Premul(tex);
+        var src = f.SourceRect;
+        var pos = s.Pos + f.Offset;
+        if (clipX > float.NegativeInfinity)
         {
-            EnsureBgFlashTexture();
-            spriteBatch.Draw(_bgFlashTex,
-                new Rectangle(0, 0, FNFGame.SCREEN_WIDTH, FNFGame.SCREEN_HEIGHT),
-                Color.White * _bgFlashAlpha);
-        }
-
-        // === 3. Rank text scrolling backdrop (zIndex 100) ===
-        if (_rankTextVisible)
-            DrawRankBackdrop(spriteBatch);
-
-        // === 4. Clear percent counter (zIndex 450) ===
-        if (_clearPercentActive && _clearPercentAlpha > 0.01f)
-            DrawClearPercent(spriteBatch);
-
-        // === 5. Character result animation (zIndex 499-501) ===
-        if (_gfResultVisible && _gfResultAnim != null)
-            _gfResultAnim.Draw(spriteBatch);
-        if (_characterResultVisible && _characterResultAnim != null)
-            _characterResultAnim.Draw(spriteBatch);
-        else if (_characterResultVisible)
-        {
-            // Fallback: draw large rank text when character sprite isn't available
-            var rankFont = Assets.GetFont(72);
-            if (rankFont != null)
+            // clipRect = (max(0, clipX - spr.x), 0, ...) in frame space
+            float cutFrame = Math.Max(0, clipX - s.Pos.X);
+            float cut = cutFrame - f.Offset.X;
+            if (cut > 0)
             {
-                string rankText = GetRankDisplayText();
-                Color rankColor = GetRankColor();
-                var rankSize = rankFont.MeasureString(rankText);
-                float rx = FNFGame.SCREEN_WIDTH / 2f + 100 - rankSize.X / 2;
-                float ry = FNFGame.SCREEN_HEIGHT / 2f - rankSize.Y / 2 - 40;
-                // Shadow
-                rankFont.DrawText(spriteBatch, rankText, new Vector2(rx + 3, ry + 3), Color.Black * 0.5f);
-                rankFont.DrawText(spriteBatch, rankText, new Vector2(rx, ry), rankColor);
+                int c = (int)MathF.Ceiling(cut);
+                if (c >= src.Width) return;
+                src = new Rectangle(src.X + c, src.Y, src.Width - c, src.Height);
+                pos.X += c;
             }
         }
-        if (_heartsResultVisible && _heartsResultAnim != null)
-            _heartsResultAnim.Draw(spriteBatch);
-
-        // === 6. Rank vertical text (zIndex 990) ===
-        if (_rankTextVisible)
-            DrawRankVerticalText(spriteBatch);
-
-        // === 6b. Song name, difficulty, small clear percent (zIndex 1000) ===
-        DrawTopBarContents(spriteBatch);
-
-        // === 7. Black top bar (zIndex 1010) ===
-        DrawTopBar(spriteBatch);
-
-        // === 8. Sound system (zIndex 1100) ===
-        if (_soundSystemVisible && _soundSystemAnim != null)
-            _soundSystemAnim.Draw(spriteBatch);
-
-        // === 9. "RESULTS" anim (zIndex 1200) ===
-        if (_resultsVisible)
-            DrawResultsTitle(spriteBatch);
-
-        // === 10. Ratings popin (zIndex 1200) ===
-        if (_ratingsVisible)
-            DrawRatingsPanel(spriteBatch);
-
-        // === 11. Score popin + digits (zIndex 1200) ===
-        if (_scoreVisible)
-            DrawScore(spriteBatch);
-
-        // === 12. Tally counters (zIndex 1200) ===
-        DrawTallyCounters(spriteBatch);
-
-        // === 13. Highscore NEW (zIndex 1200) ===
-        if (_highscoreNewVisible && _highscoreNewAnim != null)
-            _highscoreNewAnim.Draw(spriteBatch);
-
-        // === 14. Rank BG overlay (zIndex 99999, used for exit transition) ===
-        if (_rankBgAlpha > 0.001f)
-        {
-            spriteBatch.Draw(Assets.Pixel,
-                new Rectangle(0, 0, FNFGame.SCREEN_WIDTH, FNFGame.SCREEN_HEIGHT),
-                Color.Black * _rankBgAlpha);
-        }
-
-        spriteBatch.End();
-        // Restore previous scissor rectangle
-        Game.GraphicsDevice.ScissorRectangle = prevScissor;
+        var col = s.Color; float a = s.Alpha * groupAlpha;
+        a = Math.Clamp(a, 0f, 1f);
+        if (premul) sb.Draw(tex, pos, src, new Color(col.R / 255f * a, col.G / 255f * a, col.B / 255f * a, a));
+        else sb.Draw(tex, pos, src, new Color(col.R, col.G, col.B, (byte)(a * 255f)));
     }
 
-    // ==========================================
-    //  Draw helpers
-    // ==========================================
-
-    private void DrawGradientBackground(SpriteBatch spriteBatch)
+    private void DrawClearCounter(SpriteBatch sb, ClearCounter c, float clipX = float.NegativeInfinity)
     {
-        if (_gradientBG == null)
+        if (!c.Visible) return;
+        var text = c.Small ? _cpTextSmall : _cpText;
+        if (text != null)
         {
-            Color topColor = new Color(0xFE, 0xCC, 0x5C);
-            Color botColor = new Color(0xFD, 0xC0, 0x5C);
-            _gradientBG = new Texture2D(Game.GraphicsDevice, 1, FNFGame.SCREEN_HEIGHT);
-            var data = new Color[FNFGame.SCREEN_HEIGHT];
-            for (int y = 0; y < FNFGame.SCREEN_HEIGHT; y++)
-            {
-                float t = (float)y / FNFGame.SCREEN_HEIGHT;
-                data[y] = Color.Lerp(topColor, botColor, t);
-            }
-            _gradientBG.SetData(data);
+            float tx = c.X + (c.Small ? 40 : 0), ty = c.Y;
+            int cut = clipX > float.NegativeInfinity ? (int)Math.Clamp(MathF.Ceiling(clipX - tx), 0, text.Width) : 0;
+            if (cut < text.Width)
+                sb.Draw(Premul(text), new Vector2(tx + cut, ty), new Rectangle(cut, 0, text.Width - cut, text.Height), Color.White * c.Alpha);
         }
-        spriteBatch.Draw(_gradientBG,
-            new Rectangle(0, 0, FNFGame.SCREEN_WIDTH, FNFGame.SCREEN_HEIGHT), Color.White);
+        foreach (var d in c.Digits) { d.s.White = c.Flash; DrawSpr(sb, d.s, c.Alpha, clipX, premul: true); }
     }
 
-    private void EnsureBgFlashTexture()
+    private void DrawSongName(SpriteBatch sb)
     {
-        if (_bgFlashTex == null)
+        if (_songFontTex == null || string.IsNullOrEmpty(Title)) return;
+        // FlxBitmapText: glyph i at local x = sum(advance + letterSpacing); rotated by angle about its centre;
+        // clipRect = (max(0, 520 - x), 0, 1280, h) in local (unrotated) space.
+        float rot = MathHelper.ToRadians(SONG_ANGLE);
+        var centre = new Vector2(_songX + _songW / 2f, _songY + 61 / 2f);
+        float clip = Math.Max(0, 520 - _songX);
+        float curX = 0;
+        string text = Title;
+        for (int i = 0; i < text.Length; i++)
         {
-            // Original: FlxGradient [0xFFFFF1A6, 0xFFFFF1BE] 90°
-            _bgFlashTex = new Texture2D(Game.GraphicsDevice, 1, FNFGame.SCREEN_HEIGHT);
-            var data = new Color[FNFGame.SCREEN_HEIGHT];
-            Color top = new Color(0xFF, 0xF1, 0xA6);
-            Color bot = new Color(0xFF, 0xF1, 0xBE);
-            for (int y = 0; y < FNFGame.SCREEN_HEIGHT; y++)
+            char ch = text[i];
+            bool isSpace = ch == ' ';
+            bool has = _songGlyphs.TryGetValue(ch, out var g);
+            if (has && !isSpace)
             {
-                float t = (float)y / FNFGame.SCREEN_HEIGHT;
-                data[y] = Color.Lerp(top, bot, t);
-            }
-            _bgFlashTex.SetData(data);
-        }
-    }
-
-    private void DrawTopBar(SpriteBatch spriteBatch)
-    {
-        // Original: BitmapUtil.createResultsBar() — black rect rotated -3.8°
-        // width = ceil(FlxG.width * 1.011), height = ceil(width / 8.7)
-        // matrix.rotate(-3.8 * PI / 180), matrix.translate(-15, 0)
-        int barY = (int)_topBarY;
-        float topBarRot = -3.8f * MathF.PI / 180f;
-
-        if (_topBarBlackTex != null && _topBarBlackTex != Assets.Pixel)
-        {
-            spriteBatch.Draw(_topBarBlackTex,
-                new Vector2(-15, barY),
-                null,
-                Color.White,
-                topBarRot,
-                Vector2.Zero,
-                new Vector2((FNFGame.SCREEN_WIDTH + 30f) / _topBarBlackTex.Width, (float)_topBarHeight / _topBarBlackTex.Height),
-                SpriteEffects.None, 0f);
-        }
-        else
-        {
-            spriteBatch.Draw(Assets.Pixel,
-                new Vector2(-15, barY),
-                null,
-                Color.Black,
-                topBarRot,
-                Vector2.Zero,
-                new Vector2(FNFGame.SCREEN_WIDTH + 30, _topBarHeight),
-                SpriteEffects.None, 0f);
-        }
-    }
-
-    /// <summary>
-    /// Draws song name, difficulty, and small clear percent at zIndex 1000
-    /// (behind blackTopBar at 1010, but above rankVerticalText at 990).
-    /// The black bar partially covers these elements due to its -3.8° rotation.
-    /// </summary>
-    private void DrawTopBarContents(SpriteBatch spriteBatch)
-    {
-        // Song name (original: FlxBitmapText from tardlingSpritesheet.png, angle -4.4°, zIndex 1000)
-        if (!string.IsNullOrEmpty(_songName))
-        {
-            DrawSongNameBitmapFont(spriteBatch, _songName, _songNameX, _songNameY);
-        }
-
-        // Difficulty text (original: diff_{difficultyId} graphic, zIndex 1000)
-        // Original: maskShaderDifficulty clips at swagMaskX = difficulty.x - 30
-        if (_difficultyTex != null && _difficultyY > -100)
-        {
-            if (_difficultyX + _difficultyTex.Width > 525)
-            {
-                spriteBatch.Draw(_difficultyTex, new Vector2(_difficultyX, _difficultyY), Color.White);
-            }
-        }
-        else
-        {
-            var diffFont = Assets.GetFont(20);
-            if (diffFont != null && _difficultyY > -100 && _difficultyX > 525)
-            {
-                string diffText = _difficultyId.ToUpper();
-                diffFont.DrawText(spriteBatch, diffText,
-                    new Vector2(_difficultyX, _difficultyY), Color.White);
-            }
-        }
-
-        // Small clear percent (original: ClearPercentCounter small=true, zIndex 1000)
-        if (_smallClearPercentVisible && _smallClearPercentY > -100)
-        {
-            float cpBaseX = _smallClearPercentX;
-            float cpBaseY = _smallClearPercentY;
-            Color cpTint = Color.White;
-
-            if (cpBaseX > 525)
-            {
-                if (_clearPercentTextSmallTex != null && _clearPercentTextSmallTex != Assets.Pixel)
+                float gx = curX;
+                int cut = (int)Math.Clamp(MathF.Ceiling(clip - gx), 0, 49);
+                if (cut < 49)
                 {
-                    spriteBatch.Draw(_clearPercentTextSmallTex,
-                        new Vector2(cpBaseX + 40, cpBaseY), cpTint);
+                    var src = new Rectangle(g.X + cut, g.Y, g.Width - cut, g.Height);
+                    var origin = new Vector2(_songW / 2f - (gx + cut), 61 / 2f);
+                    sb.Draw(Premul(_songFontTex), centre, src, Color.White, rot, origin, 1f, SpriteEffects.None, 0f);
                 }
+            }
+            if (has || isSpace) curX += 49 - 15;
+        }
+    }
 
-                var cpDigits = GetDigitArray(_clearPercentTarget);
-                int cpDigitOffset = (cpDigits.Length == 1) ? 1 : (cpDigits.Length == 3) ? -1 : 0;
+    private void BuildSongFont()
+    {
+        _songFontTex = Assets.LoadTexture("resultScreen/tardlingSpritesheet");
+        const string letters = "AaBbCcDdEeFfGgHhiIJjKkLlMmNnOoPpQqRrSsTtUuVvWwXxYyZz:1234567890().-";
+        if (_songFontTex != null && _songFontTex != Assets.Pixel)
+        {
+            int cols = _songFontTex.Width / 49;
+            for (int i = 0; i < letters.Length; i++)
+                _songGlyphs[letters[i]] = new Rectangle((i % cols) * 49, (i / cols) * 61, 49, 61);
+        }
+        if (string.IsNullOrEmpty(Title)) Title = _songName;
+        // getStringWidth: sum(charWidth + letterSpacing) - letterSpacing; unknown chars count 0 + letterSpacing
+        float w = 0;
+        foreach (char ch in Title) w += (ch == ' ' || _songGlyphs.ContainsKey(ch) ? 49 : 0) - 15;
+        if (Title.Length > 0) w += 15;
+        _songW = (int)w;
+    }
 
-                for (int d = 0; d < cpDigits.Length; d++)
-                {
-                    int di = d + 1;
-                    float xPos = (di - 1 + cpDigitOffset) * 32f + (-24);
-                    float yPos = (di - 1 + cpDigitOffset) * (-4f);
+    // ===================================================================== textures
+    private Texture2D MakeGradient(Color top, Color bottom)
+    {
+        var tex = new Texture2D(Game.GraphicsDevice, 1, 720);
+        var px = new Color[720];
+        for (int y = 0; y < 720; y++) px[y] = Color.Lerp(top, bottom, y / 719f);
+        tex.SetData(px);
+        return tex;
+    }
 
-                    if (_clearPercentSmallSheet != null)
+    /// <summary>BitmapUtil.createResultsBar(): black ceil(1280*1.011) x ceil(w/8.7) rect rotated -3.8 deg, moved -15 px.</summary>
+    private Texture2D MakeResultsBar(out int h)
+    {
+        int w = (int)Math.Ceiling(1280 * 1.011);
+        h = (int)Math.Ceiling(w / 8.7);
+        var tex = new Texture2D(Game.GraphicsDevice, w, h);
+        var px = new Color[w * h];
+        double th = -3.8 * Math.PI / 180, c = Math.Cos(th), s = Math.Sin(th);
+        for (int y = 0; y < h; y++)
+            for (int x = 0; x < w; x++)
+            {
+                int hits = 0;
+                for (int sy = 0; sy < 4; sy++)
+                    for (int sx = 0; sx < 4; sx++)
                     {
-                        string fn = $"number {cpDigits[d]} 0001";
-                        var frame = _clearPercentSmallSheet.GetFrame(fn);
-                        if (frame == null)
-                        {
-                            var frames = _clearPercentSmallSheet.GetAnimationFuzzy($"number {cpDigits[d]}");
-                            if (frames != null && frames.Count > 0) frame = frames[0];
-                        }
-                        if (frame != null)
-                        {
-                            spriteBatch.Draw(_clearPercentSmallSheet.Texture,
-                                new Vector2(cpBaseX + xPos + frame.Offset.X, cpBaseY + yPos + frame.Offset.Y),
-                                frame.SourceRect, cpTint);
-                            continue;
-                        }
+                        double X = x + (sx + 0.5) / 4 + 15, Y = y + (sy + 0.5) / 4;
+                        double u = X * c + Y * s, v = -X * s + Y * c; // inverse rotation
+                        if (u >= 0 && u < w && v >= 0 && v < h) hits++;
                     }
-
-                    var cpFont = Assets.GetFont(18);
-                    if (cpFont != null)
-                        cpFont.DrawText(spriteBatch, cpDigits[d].ToString(),
-                            new Vector2(cpBaseX + xPos, cpBaseY + yPos), cpTint);
-                }
+                px[y * w + x] = new Color(0, 0, 0, hits * 255 / 16);
             }
-        }
+        tex.SetData(px);
+        return tex;
     }
 
-    private void DrawResultsTitle(SpriteBatch spriteBatch)
+    private Texture2D WhiteOf(Texture2D t)
     {
-        // Original: x = FlxG.width - 1480, y = -10
-        if (_resultsAnim != null)
-        {
-            _resultsAnim.Draw(spriteBatch);
-            return;
-        }
-
-        // Fallback: text
-        var font = Assets.GetFont(56);
-        if (font != null)
-        {
-            font.DrawText(spriteBatch, "RESULTS",
-                new Vector2(FNFGame.SCREEN_WIDTH - 400, 80), Color.White);
-        }
+        if (t == null) return null;
+        if (_whiteTex.TryGetValue(t, out var w)) return w;
+        var px = new Color[t.Width * t.Height];
+        t.GetData(px);
+        for (int i = 0; i < px.Length; i++) px[i] = new Color(px[i].A, px[i].A, px[i].A, px[i].A); // PureColor: white * alpha (premultiplied)
+        w = new Texture2D(Game.GraphicsDevice, t.Width, t.Height);
+        w.SetData(px);
+        _whiteTex[t] = w;
+        return w;
     }
 
-    private void DrawRatingsPanel(SpriteBatch spriteBatch)
+    private readonly Dictionary<Texture2D, Texture2D> _premulTex = new();
+    private Texture2D Premul(Texture2D t)
     {
-        // Original: ratingsPopin at (-135, 135)
-        if (_ratingsPopin != null)
-        {
-            _ratingsPopin.Draw(spriteBatch);
-            return;
-        }
-
-        // Fallback: draw dark panel with tally labels
-        spriteBatch.Draw(Assets.Pixel,
-            new Rectangle(0, 135, 350, 400),
-            new Color(0, 0, 0, 120));
-
-        var labelFont = Assets.GetFont(18);
-        if (labelFont != null && _tallies != null)
-        {
-            for (int i = 0; i < _tallies.Length; i++)
-            {
-                if (!_tallies[i].Visible) continue;
-                labelFont.DrawText(spriteBatch, _tallies[i].Label,
-                    new Vector2(20, _tallies[i].Y), _tallies[i].ValueColor * 0.8f);
-            }
-        }
+        if (t == null) return null;
+        if (_premulTex.TryGetValue(t, out var w)) return w;
+        var px = new Color[t.Width * t.Height];
+        t.GetData(px);
+        for (int i = 0; i < px.Length; i++) { var c = px[i]; px[i] = new Color(c.R * c.A / 255, c.G * c.A / 255, c.B * c.A / 255, c.A); }
+        w = new Texture2D(Game.GraphicsDevice, t.Width, t.Height);
+        w.SetData(px);
+        _premulTex[t] = w;
+        return w;
     }
 
-    private void DrawTallyCounters(SpriteBatch spriteBatch)
-    {
-        if (_tallies == null) return;
-
-        for (int i = 0; i < _tallies.Length; i++)
-        {
-            if (!_tallies[i].Visible) continue;
-
-            int curVal = (int)Math.Round(_tallies[i].CurrentValue);
-            DrawTallyNumber(spriteBatch, curVal, _tallies[i].TargetValue,
-                _tallies[i].X, _tallies[i].Y, _tallies[i].ValueColor);
-        }
-    }
-
-    private void DrawTallyNumber(SpriteBatch spriteBatch, int number, int maxNumber,
-        int x, int y, Color tint)
-    {
-        // Original: TallyCounter uses tallieNumber spritesheet, 43px spacing per digit
-        // Each digit frame named "{digit} small0000"
-        var digits = GetDigitArray(number);
-
-        if (_tallieNumberSheet != null)
-        {
-            for (int d = 0; d < digits.Length; d++)
-            {
-                // Original: animation.addByPrefix("0", "0 small", 24, false)
-                // Frame naming in XML: "{digit} small0000", "{digit} small0001", etc.
-                string frameName = $"{digits[d]} small0000";
-                var frame = _tallieNumberSheet.GetFrame(frameName);
-                if (frame == null)
-                {
-                    // Try fuzzy match (prefix "N small")
-                    var frames = _tallieNumberSheet.GetAnimationFuzzy($"{digits[d]} small");
-                    if (frames != null && frames.Count > 0) frame = frames[0];
-                }
-                if (frame != null)
-                {
-                    float dx = x + d * 43;
-                    spriteBatch.Draw(_tallieNumberSheet.Texture,
-                        new Vector2(dx + frame.Offset.X, y + frame.Offset.Y),
-                        frame.SourceRect, tint);
-                }
-            }
-        }
-        else
-        {
-            // Font fallback
-            var valueFont = Assets.GetFont(28);
-            if (valueFont != null)
-                valueFont.DrawText(spriteBatch, number.ToString(), new Vector2(x, y), tint);
-        }
-    }
-
-    private static int[] GetDigitArray(int number)
-    {
-        if (number <= 0) return new[] { 0 };
-        var digits = new List<int>();
-        int temp = Math.Abs(number);
-        while (temp > 0)
-        {
-            digits.Add(temp % 10);
-            temp /= 10;
-        }
-        digits.Reverse();
-        return digits.ToArray();
-    }
-
-    private static readonly string[] NumToString = {
-        "ZERO", "ONE", "TWO", "THREE", "FOUR", "FIVE",
-        "SIX", "SEVEN", "EIGHT", "NINE", "DISABLED"
-    };
-
-    private void DrawScore(SpriteBatch spriteBatch)
-    {
-        // Score popin background
-        if (_scorePopin != null)
-            _scorePopin.Draw(spriteBatch);
-        else if (_scoreDigitsVisible)
-        {
-            // Fallback: draw "SCORE" label and dark backdrop behind digits
-            spriteBatch.Draw(Assets.Pixel,
-                new Rectangle(20, 290, 680, 80),
-                new Color(0, 0, 0, 100));
-            var scoreLabel = Assets.GetFont(18);
-            if (scoreLabel != null)
-                scoreLabel.DrawText(spriteBatch, "SCORE", new Vector2(35, 292), Color.White * 0.6f);
-        }
-
-        if (!_scoreDigitsVisible) return;
-
-        // Original: score-digital-numbers spritesheet, 65px per digit, x=35 y=305
-        // Frame naming: "{NAME} DIGITAL0001" etc. We use the first frame (0001 = glow, 0005 = settled)
-        for (int i = 0; i < _scoreDigitCount; i++)
-        {
-            int digit;
-            if (_scoreDigitDone[i])
-                digit = _scoreTargetDigits[i];
-            else if (_scoreDigitTweening != null && _scoreDigitTweening[i])
-                digit = Math.Clamp((int)Math.Floor(_scoreCurrentDigits[i]), 0, 9);
-            else if (_scoreDigitShuffling[i])
-                digit = ((int)_scoreCurrentDigits[i]) % 10;
-            else
-                digit = _scoreTargetDigits[i] == 10 ? 10 : 0;
-
-            if (digit >= 10)
-            {
-                // DISABLED/GONE — draw the GONE frame (invisible placeholder)
-                // Original: plays GONE animation which is a transparent frame
-                // We just skip drawing since GONE is effectively invisible
-                continue;
-            }
-
-            float dx = 35 + (65 * i);
-            float dy = 305;
-
-            if (_scoreDigitalSheet != null)
-            {
-                // Original: first set_digit plays from frame 0 (glow=true), subsequent from frame 4 (glow=false)
-                // During shuffle: frame 4 (settled look, 0005)
-                // After tween finalDelay: frame 0 (glow replay, 0001)
-                // _scoreDigitGlow[i] = true means show glow frame
-                // _scoreDigitFirstAppear[i] = true means first time showing this digit
-                string name = NumToString[digit];
-                bool showGlow;
-                if (_scoreDigitFirstAppear != null && _scoreDigitFirstAppear[i])
-                {
-                    showGlow = true;
-                    _scoreDigitFirstAppear[i] = false;
-                }
-                else
-                {
-                    showGlow = _scoreDigitGlow != null && _scoreDigitGlow[i];
-                }
-                string frameSuffix = showGlow ? "0001" : "0005";
-                string frameName = $"{name} DIGITAL{frameSuffix}";
-                var frame = _scoreDigitalSheet.GetFrame(frameName);
-                if (frame == null)
-                {
-                    // Fall back to any frame for this digit
-                    var frames = _scoreDigitalSheet.GetAnimationFuzzy($"{name} DIGITAL");
-                    if (frames != null && frames.Count > 0)
-                        frame = frames[^1]; // last frame = settled
-                }
-                if (frame != null)
-                {
-                    spriteBatch.Draw(_scoreDigitalSheet.Texture,
-                        new Vector2(dx + frame.Offset.X, dy + frame.Offset.Y),
-                        frame.SourceRect, Color.White);
-                    continue;
-                }
-            }
-
-            // Font fallback
-            var font = Assets.GetFont(36);
-            if (font != null)
-                font.DrawText(spriteBatch, digit.ToString(), new Vector2(dx, dy), Color.White);
-        }
-    }
-
-    private void DrawClearPercent(SpriteBatch spriteBatch)
-    {
-        // Original: ClearPercentCounter at (width/2 + 190, height/2 - 70)
-        // Consists of: clearPercentText.png + digit sprites from clearPercentNumberLeft/Right
-        int displayPercent = (int)Math.Round(_clearPercentCurrent);
-        float baseX = FNFGame.SCREEN_WIDTH / 2f + 190;
-        float baseY = FNFGame.SCREEN_HEIGHT / 2f - 70;
-        Color tint = Color.White * _clearPercentAlpha;
-
-        // Draw "%" text sprite first (at x=0, y=0 relative to group)
-        // Original: PureColor shader makes it all white during flash
-        if (_clearPercentTextTex != null && _clearPercentTextTex != Assets.Pixel)
-        {
-            Color textTint = _clearPercentFlashing ? Color.White * _clearPercentAlpha : tint;
-            spriteBatch.Draw(_clearPercentTextTex, new Vector2(baseX, baseY), textTint);
-        }
-        else
-        {
-            // Fallback: draw "%" with font
-            var pctFont = Assets.GetFont(48);
-            if (pctFont != null)
-            {
-                Color pctTint = _clearPercentFlashing ? Color.White * _clearPercentAlpha : tint;
-                pctFont.DrawText(spriteBatch, "%", new Vector2(baseX + 20, baseY + 10), pctTint);
-            }
-        }
-
-        // Draw digit sprites
-        var digits = GetDigitArray(displayPercent);
-        // Original layout: digitSize=72, offset for 1-digit(+1), 3-digit(-1)
-        int digitOffset = (digits.Length == 1) ? 1 : (digits.Length == 3) ? -1 : 0;
-
-        for (int ind = 0; ind < digits.Length; ind++)
-        {
-            int digitIndex = ind + 1;
-            float xPos = (digitIndex - 1 + digitOffset) * 72f;
-            float yPos = 72; // digits are below the "%" text
-
-            // Three digits = LLR variant pattern, otherwise index >= 1 is Right
-            bool variant = (digits.Length == 3) ? (digitIndex >= 2) : (digitIndex >= 1);
-            var sheet = variant ? _clearPercentRightSheet : _clearPercentLeftSheet;
-
-            if (sheet != null)
-            {
-                string frameName = $"number {digits[ind]} 0001";
-                var frame = sheet.GetFrame(frameName);
-                if (frame == null)
-                {
-                    var frames = sheet.GetAnimationFuzzy($"number {digits[ind]}");
-                    if (frames != null && frames.Count > 0) frame = frames[0];
-                }
-                if (frame != null)
-                {
-                    // Flash white effect: during flash, draw as pure white
-                    Color digitTint = _clearPercentFlashing ? Color.White * _clearPercentAlpha : tint;
-                    spriteBatch.Draw(sheet.Texture,
-                        new Vector2(baseX + xPos + frame.Offset.X, baseY + yPos + frame.Offset.Y),
-                        frame.SourceRect, digitTint);
-                    continue;
-                }
-            }
-
-            // Font fallback
-            var font = Assets.GetFont(72);
-            if (font != null)
-            {
-                Color color = _clearPercentFlashing ? Color.White * _clearPercentAlpha : tint;
-                font.DrawText(spriteBatch, digits[ind].ToString(), new Vector2(baseX + xPos, baseY + yPos), color);
-            }
-        }
-    }
-
-    private void DrawRankBackdrop(SpriteBatch spriteBatch)
-    {
-        // Original: 12 horizontal FlxBackdrop rows using rankScroll{RANK}.png, gap=10, X axis
-        // Each row at y = 50 + (135*i/2) + 10, alternating velocity.x ±7
-        // These are on cameraScroll which has canvas.rotation = -3.8°
-        bool hasHorTex = _rankHorTex != null && _rankHorTex != Assets.Pixel;
-        float rotRad = -3.8f * MathF.PI / 180f;
-
-        for (int i = 0; i < 12; i++)
-        {
-            float y = 50 + (135 * i / 2f) + 10;
-            float baseX = FNFGame.SCREEN_WIDTH / 2f - 320 + _rankRowOffsets[i];
-
-            if (hasHorTex)
-            {
-                int tileW = _rankHorTex.Width + 10; // original gap = 10
-                // Proper modulo wrapping for negative values
-                float wrappedX = ((baseX % tileW) + tileW) % tileW;
-                for (float tx = wrappedX - tileW * 4; tx < FNFGame.SCREEN_WIDTH + tileW; tx += tileW)
-                {
-                    spriteBatch.Draw(_rankHorTex,
-                        new Vector2(tx, y),
-                        null,
-                        Color.White,
-                        rotRad,
-                        Vector2.Zero,
-                        Vector2.One,
-                        SpriteEffects.None, 0f);
-                }
-            }
-            else
-            {
-                string rankText = GetRankDisplayText();
-                Color horColor = GetRankColor() * 0.6f;
-                var font = Assets.GetFont(28);
-                if (font == null) continue;
-                var textSize = font.MeasureString(rankText);
-                float tileWidth = textSize.X + 10;
-                if (tileWidth < 1) tileWidth = 200;
-                float wrappedX = ((baseX % tileWidth) + tileWidth) % tileWidth;
-                for (float tx = wrappedX - tileWidth * 3; tx < FNFGame.SCREEN_WIDTH + tileWidth; tx += tileWidth)
-                {
-                    if (tx > FNFGame.SCREEN_WIDTH + 50 || tx < -tileWidth - 50) continue;
-                    font.DrawText(spriteBatch, rankText, new Vector2(tx, y), horColor);
-                }
-            }
-        }
-    }
-
-    private void DrawRankVerticalText(SpriteBatch spriteBatch)
-    {
-        if (!_rankTextVisible) return;
-
-        // FlxFlicker effect: toggles visibility every 2/24s for 2/24*3 duration
-        // FlxFlicker starts by toggling immediately (visible?false on first tick)
-        if (!_rankVertFlickerDone)
-        {
-            float flickerPeriod = 2f / 24f;
-            int flickerIndex = (int)(_rankVertFlickerTimer / flickerPeriod);
-            if (flickerIndex % 2 == 0) return; // hidden during even phases (first toggle hides)
-        }
-
-        // Original: FlxBackdrop using rankText{RANK}.png, Y axis, gap = 30
-        // x = width - 44, y starts at 100, velocity.y = -80
-        // Clamp x so vertical text doesn't overflow right edge
-        float x = FNFGame.SCREEN_WIDTH - 44;
-        bool hasVerTex = _rankVerTex != null && _rankVerTex != Assets.Pixel;
-
-        if (hasVerTex)
-        {
-            int tileH = _rankVerTex.Height + 30; // original gap = 30
-            float baseY = 100 + _rankVertOffset;
-            float wrappedY = ((baseY % tileH) + tileH) % tileH;
-            for (float ty = wrappedY - tileH * 3; ty < FNFGame.SCREEN_HEIGHT + tileH; ty += tileH)
-            {
-                if (ty > FNFGame.SCREEN_HEIGHT + 50 || ty < -_rankVerTex.Height - 50) continue;
-                // Clip texture to screen width so it doesn't overflow right edge
-                int drawWidth = Math.Min(_rankVerTex.Width, Math.Max(0, FNFGame.SCREEN_WIDTH - (int)x));
-                if (drawWidth <= 0) continue;
-                spriteBatch.Draw(_rankVerTex,
-                    new Vector2(x, ty),
-                    new Rectangle(0, 0, drawWidth, _rankVerTex.Height),
-                    Color.White);
-            }
-        }
-        else
-        {
-            // Text fallback
-            string rankText = GetRankDisplayText();
-            Color vertColor = GetRankColor() * 0.8f;
-            var font = Assets.GetFont(28);
-            if (font == null) return;
-            var textSize = font.MeasureString(rankText);
-            float tileHeight = textSize.Y + 30;
-            if (tileHeight < 1) tileHeight = 50;
-            float baseY = 100 + _rankVertOffset;
-            float wrappedY = ((baseY % tileHeight) + tileHeight) % tileHeight;
-            for (float ty = wrappedY - tileHeight * 3; ty < FNFGame.SCREEN_HEIGHT + tileHeight; ty += tileHeight)
-            {
-                if (ty > FNFGame.SCREEN_HEIGHT + 20 || ty < -tileHeight - 20) continue;
-                font.DrawText(spriteBatch, rankText, new Vector2(Math.Min(x, FNFGame.SCREEN_WIDTH - 10), ty), vertColor);
-            }
-        }
-    }
-
-    // ==========================================
-    //  Scoring (matches original Scoring.hx)
-    // ==========================================
-
+    // ===================================================================== Scoring
     private ScoringRank CalculateRank()
     {
         if (_totalNotes == 0) return ScoringRank.SHIT;
         if (_tallySick == _totalNotes) return ScoringRank.PERFECT_GOLD;
-
-        float completion = Math.Clamp(
-            _totalNotesHit / (float)_totalNotes, 0f, 1f);
-
-        // Original uses == for PERFECT threshold, >= for all others
-        if (completion == 1.0f) return ScoringRank.PERFECT;
+        float completion = Math.Clamp((_tallySick + _tallyGood - _tallyMissed) / (float)_totalNotes, 0f, 1f);
+        if (completion == 1f) return ScoringRank.PERFECT;
         if (completion >= 0.90f) return ScoringRank.EXCELLENT;
         if (completion >= 0.80f) return ScoringRank.GREAT;
         if (completion >= 0.60f) return ScoringRank.GOOD;
         return ScoringRank.SHIT;
     }
 
-    // ==========================================
-    //  Rank helper functions (from ScoringRank enum in Scoring.hx)
-    // ==========================================
-
-    private string GetResultsMusicPath()
+    private float MusicDelay() => _rank switch
     {
-        return _rank switch
-        {
-            ScoringRank.PERFECT_GOLD or ScoringRank.PERFECT => "resultsPERFECT",
-            ScoringRank.EXCELLENT => "resultsEXCELLENT",
-            ScoringRank.GREAT or ScoringRank.GOOD => "resultsNORMAL",
-            ScoringRank.SHIT => "resultsSHIT",
-            _ => "resultsNORMAL"
-        };
-    }
-
-    private float GetMusicDelay()
+        ScoringRank.PERFECT_GOLD or ScoringRank.PERFECT => 95f / 24f, ScoringRank.EXCELLENT => 0f,
+        ScoringRank.GREAT => 5f / 24f, ScoringRank.GOOD => 3f / 24f, _ => 2f / 24f
+    };
+    private float BFDelay() => _rank switch
     {
-        return _rank switch
-        {
-            ScoringRank.PERFECT_GOLD or ScoringRank.PERFECT => 95f / 24f,
-            ScoringRank.EXCELLENT => 0f,
-            ScoringRank.GREAT => 5f / 24f,
-            ScoringRank.GOOD => 3f / 24f,
-            ScoringRank.SHIT => 2f / 24f,
-            _ => 3.5f
-        };
-    }
-
-    private float GetBFDelay()
+        ScoringRank.PERFECT_GOLD or ScoringRank.PERFECT => 95f / 24f, ScoringRank.EXCELLENT => 97f / 24f, _ => 95f / 24f
+    };
+    private float FlashDelay() => _rank switch
     {
-        return _rank switch
-        {
-            ScoringRank.PERFECT_GOLD or ScoringRank.PERFECT => 95f / 24f,
-            ScoringRank.EXCELLENT => 97f / 24f,
-            ScoringRank.GREAT => 95f / 24f,
-            ScoringRank.GOOD => 95f / 24f,
-            ScoringRank.SHIT => 95f / 24f,
-            _ => 3.5f
-        };
-    }
-
-    private float GetFlashDelay()
+        ScoringRank.PERFECT_GOLD or ScoringRank.PERFECT => 129f / 24f, ScoringRank.EXCELLENT => 122f / 24f,
+        ScoringRank.GREAT => 109f / 24f, ScoringRank.GOOD => 107f / 24f, _ => 186f / 24f
+    };
+    private float HighscoreDelay() => _rank switch
     {
-        return _rank switch
-        {
-            ScoringRank.PERFECT_GOLD or ScoringRank.PERFECT => 129f / 24f,
-            ScoringRank.EXCELLENT => 122f / 24f,
-            ScoringRank.GREAT => 109f / 24f,
-            ScoringRank.GOOD => 107f / 24f,
-            ScoringRank.SHIT => 186f / 24f,
-            _ => 3.5f
-        };
-    }
-
-    private float GetHighscoreDelay()
+        ScoringRank.PERFECT_GOLD or ScoringRank.PERFECT => 140f / 24f, ScoringRank.EXCELLENT => 140f / 24f,
+        ScoringRank.GREAT => 129f / 24f, ScoringRank.GOOD => 127f / 24f, _ => 207f / 24f
+    };
+    private string HorTextAsset() => _rank switch
     {
-        return _rank switch
-        {
-            ScoringRank.PERFECT_GOLD or ScoringRank.PERFECT => 140f / 24f,
-            ScoringRank.EXCELLENT => 140f / 24f,
-            ScoringRank.GREAT => 129f / 24f,
-            ScoringRank.GOOD => 127f / 24f,
-            ScoringRank.SHIT => 207f / 24f,
-            _ => 3.5f
-        };
-    }
-
-    private string GetRankDisplayText()
+        ScoringRank.PERFECT_GOLD or ScoringRank.PERFECT => "resultScreen/rankText/rankScrollPERFECT",
+        ScoringRank.EXCELLENT => "resultScreen/rankText/rankScrollEXCELLENT", ScoringRank.GREAT => "resultScreen/rankText/rankScrollGREAT",
+        ScoringRank.GOOD => "resultScreen/rankText/rankScrollGOOD", _ => "resultScreen/rankText/rankScrollLOSS"
+    };
+    private string VerTextAsset() => _rank switch
     {
-        return _rank switch
-        {
-            ScoringRank.PERFECT_GOLD => "PERFECT!!",
-            ScoringRank.PERFECT => "PERFECT",
-            ScoringRank.EXCELLENT => "EXCELLENT",
-            ScoringRank.GREAT => "GREAT",
-            ScoringRank.GOOD => "GOOD",
-            ScoringRank.SHIT => "LOSS",
-            _ => "LOSS"
-        };
-    }
-
-    private string GetHorTextAsset()
-    {
-        return _rank switch
-        {
-            ScoringRank.PERFECT_GOLD or ScoringRank.PERFECT => "resultScreen/rankText/rankScrollPERFECT",
-            ScoringRank.EXCELLENT => "resultScreen/rankText/rankScrollEXCELLENT",
-            ScoringRank.GREAT => "resultScreen/rankText/rankScrollGREAT",
-            ScoringRank.GOOD => "resultScreen/rankText/rankScrollGOOD",
-            ScoringRank.SHIT => "resultScreen/rankText/rankScrollLOSS",
-            _ => "resultScreen/rankText/rankScrollGOOD"
-        };
-    }
-
-    private string GetVerTextAsset()
-    {
-        return _rank switch
-        {
-            ScoringRank.PERFECT_GOLD or ScoringRank.PERFECT => "resultScreen/rankText/rankTextPERFECT",
-            ScoringRank.EXCELLENT => "resultScreen/rankText/rankTextEXCELLENT",
-            ScoringRank.GREAT => "resultScreen/rankText/rankTextGREAT",
-            ScoringRank.GOOD => "resultScreen/rankText/rankTextGOOD",
-            ScoringRank.SHIT => "resultScreen/rankText/rankTextLOSS",
-            _ => "resultScreen/rankText/rankTextGOOD"
-        };
-    }
-
-    private Color GetRankColor()
-    {
-        return _rank switch
-        {
-            ScoringRank.PERFECT_GOLD => new Color(0xFF, 0xB6, 0x19),
-            ScoringRank.PERFECT => new Color(0xFF, 0x58, 0xB4),
-            ScoringRank.EXCELLENT => new Color(0xFD, 0xCB, 0x42),
-            ScoringRank.GREAT => new Color(0xEA, 0xF6, 0xFF),
-            ScoringRank.GOOD => new Color(0xEF, 0x87, 0x64),
-            ScoringRank.SHIT => new Color(0x60, 0x44, 0xFF),
-            _ => Color.White
-        };
-    }
-
-    // ==========================================
-    //  Easing functions (match FlxEase)
-    // ==========================================
-
-    private static float QuartOut(float t)
-    {
-        t -= 1f;
-        return -(t * t * t * t - 1f);
-    }
-
-    private static float ExpoOut(float t)
-    {
-        return (t >= 1f) ? 1f : -MathF.Pow(2f, -10f * t) + 1f;
-    }
-
-    private static float QuadOut(float t)
-    {
-        return -t * (t - 2f);
-    }
-
-    private static float QuadIn(float t)
-    {
-        return t * t;
-    }
-
-    // ==========================================
-    //  Bitmap font rendering (tardlingSpritesheet.png)
-    // ==========================================
-
-    private void DrawSongNameBitmapFont(SpriteBatch spriteBatch, string text, float x, float y)
-    {
-        // Original: FlxBitmapFont.fromMonospace(tardlingSpritesheet, fontLetters, 49x61)
-        // letterSpacing = -15, angle = -4.4°
-        bool hasBitmapFont = _songNameFontTex != null && _songNameFontTex != Assets.Pixel;
-        float rotRad = SONG_NAME_ANGLE * MathF.PI / 180f;
-
-        if (hasBitmapFont)
-        {
-            // Calculate chars per row in the spritesheet
-            int charsPerRow = _songNameFontTex.Width / FONT_CHAR_W;
-            float dx = 0;
-            foreach (char c in text)
-            {
-                int idx = FONT_LETTERS.IndexOf(c);
-                if (idx < 0)
-                {
-                    // Space or unknown char — advance by char width
-                    dx += FONT_CHAR_W + FONT_LETTER_SPACING;
-                    continue;
-                }
-                int col = idx % charsPerRow;
-                int row = idx / charsPerRow;
-                var srcRect = new Rectangle(col * FONT_CHAR_W, row * FONT_CHAR_H, FONT_CHAR_W, FONT_CHAR_H);
-
-                // Calculate rotated position for this character
-                float cx = x + dx * MathF.Cos(rotRad);
-                float cy = y + dx * MathF.Sin(rotRad);
-
-                // Clip: don't draw if left of x=520 (original maskShader)
-                if (cx + FONT_CHAR_W > 525)
-                {
-                    spriteBatch.Draw(_songNameFontTex,
-                        new Vector2(cx, cy),
-                        srcRect,
-                        Color.White,
-                        rotRad,
-                        Vector2.Zero,
-                        Vector2.One,
-                        SpriteEffects.None, 0f);
-                }
-                dx += FONT_CHAR_W + FONT_LETTER_SPACING;
-            }
-        }
-        else
-        {
-            // Font fallback
-            var nameFont = Assets.GetFont(24);
-            if (nameFont != null && x > -500)
-            {
-                string formatted = text.Replace("-", " ").Replace("_", " ").ToUpper();
-                nameFont.DrawText(spriteBatch, formatted, new Vector2(x, y), Color.White);
-            }
-        }
-    }
+        ScoringRank.PERFECT_GOLD or ScoringRank.PERFECT => "resultScreen/rankText/rankTextPERFECT",
+        ScoringRank.EXCELLENT => "resultScreen/rankText/rankTextEXCELLENT", ScoringRank.GREAT => "resultScreen/rankText/rankTextGREAT",
+        ScoringRank.GOOD => "resultScreen/rankText/rankTextGOOD", _ => "resultScreen/rankText/rankTextLOSS"
+    };
 }

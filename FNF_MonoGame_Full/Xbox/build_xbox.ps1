@@ -10,14 +10,17 @@
 #
 # USAGE:
 #   .\build_xbox.ps1              # Build Debug APPX
-#   .\build_xbox.ps1 -Release     # Build Release APPX  
+#   .\build_xbox.ps1 -Release     # Build Release APPX (.NET Native, signed)
+#   .\build_xbox.ps1 -Release -Full   # + FNF_Xbox_<ver>_x64_full.msix with the whole Content folder
 #   .\build_xbox.ps1 -Deploy      # Build and deploy to Xbox
 ###############################################################################
 
 param(
     [switch]$Release,
+    [switch]$Full,            # also build the self-contained ..._full.msix (code + Content) with make_full_package.ps1
     [switch]$Deploy,
-    [string]$XboxIP = ""
+    [string]$XboxIP = "",
+    [string]$Thumbprint = "0CF8C36AC5F8A1D97017E9FB18CE21AFDD8176A3"
 )
 
 $ErrorActionPreference = "Continue"
@@ -105,7 +108,10 @@ Write-Host "  Packages restored" -ForegroundColor Green
 Write-Host ""
 $buildLabel = "[3/5] Building $Config $Platform"
 Write-Host $buildLabel -ForegroundColor Yellow
-& $msbuild $ProjectFile /p:Configuration=$Config /p:Platform=$Platform /p:AppxBundle=Never /v:minimal
+$pkgDir = Join-Path $ScriptDir "AppPackages\"
+& $msbuild $ProjectFile /m /p:Configuration=$Config /p:Platform=$Platform /p:AppxBundle=Never /v:minimal `
+    /p:UapAppxPackageBuildMode=SideloadOnly /p:GenerateAppxPackageOnBuild=true /p:AppxPackageDir=$pkgDir `
+    /p:AppxPackageSigningEnabled=true /p:PackageCertificateThumbprint=$Thumbprint
 if ($LASTEXITCODE -ne 0) {
     Write-Host "ERROR: Build failed!" -ForegroundColor Red
     exit 1
@@ -176,6 +182,14 @@ if ($appxFile -and (Test-Path $appxFile -ErrorAction SilentlyContinue)) {
             Write-Host "  Dependencies copied to output" -ForegroundColor Green
         }
     }
+}
+
+# === Step 4d: self-contained package (code + Content) ===
+if ($Full -and $appxFile) {
+    Write-Host ""
+    Write-Host "[4d] Building the full package (code + Content)..." -ForegroundColor Yellow
+    $codeMsix = Get-ChildItem (Join-Path $ScriptDir "AppPackages") -Recurse -Filter "FNF_Xbox_*_x64.msix" | Sort-Object LastWriteTime | Select-Object -Last 1
+    & (Join-Path $ScriptDir "make_full_package.ps1") -Msix $codeMsix.FullName -Thumbprint $Thumbprint
 }
 
 # === Step 5: Deploy to Xbox (optional) ===

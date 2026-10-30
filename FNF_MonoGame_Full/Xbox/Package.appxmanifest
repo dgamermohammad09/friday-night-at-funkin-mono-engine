@@ -9,13 +9,13 @@
 
   <Identity
     Name="FridayNightFunkin.MonoGame"
-    Publisher="CN=Mohammad Aljafari"
-    Version="1.0.0.0" />
+    Publisher="CN=mohammad aljafari"
+    Version="1.5.8.0" />
 
   <mp:PhoneIdentity PhoneProductId="a1b2c3d4-e5f6-7890-abcd-ef1234567890" PhonePublisherId="00000000-0000-0000-0000-000000000000"/>
 
   <Properties>
-    <DisplayName>Friday Night Funkin' - MonoGame Edition</DisplayName>
+    <DisplayName>Friday Night Funkin' - MonoGame Engine</DisplayName>
     <PublisherDisplayName>Mohammad Aljafari</PublisherDisplayName>
     <Logo>Assets\StoreLogo.png</Logo>
   </Properties>
@@ -38,10 +38,10 @@
         DisplayName="Friday Night Funkin'"
         Square150x150Logo="Assets\Square150x150Logo.png"
         Square44x44Logo="Assets\Square44x44Logo.png"
-        Description="Friday Night Funkin' - MonoGame Edition for Xbox"
-        BackgroundColor="#1A1A2E">
+        Description="Friday Night Funkin' - MonoGame Engine for Xbox"
+        BackgroundColor="#F1F900">
         <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png" Square71x71Logo="Assets\SmallTile.png" Square310x310Logo="Assets\LargeTile.png"/>
-        <uap:SplashScreen Image="Assets\SplashScreen.png" BackgroundColor="#1A1A2E"/>
+        <uap:SplashScreen Image="Assets\SplashScreen.png" BackgroundColor="#F1F900"/>
       </uap:VisualElements>
 
       <!-- Xbox: run as a game with expanded resources (more RAM, longer startup timeout) -->
@@ -53,6 +53,9 @@
 
   <Capabilities>
     <Capability Name="internetClient" />
+    <!-- online multiplayer: host a relay / reach other consoles and PCs (LAN + internet) -->
+    <Capability Name="internetClientServer" />
+    <Capability Name="privateNetworkClientServer" />
     <uap:Capability Name="userAccountInformation"/>
     <!-- Xbox: expanded resources gives the app game-level memory and startup time -->
     <rescap:Capability Name="expandedResources" />

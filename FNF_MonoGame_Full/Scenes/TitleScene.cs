@@ -5,7 +5,7 @@ using FNF_MonoGame.Engine;
 namespace FNF_MonoGame.Scenes;
 
 /// <summary>
-/// Title screen scene — faithful recreation of the original FNF intro sequence.
+/// Title screen scene ? faithful recreation of the original FNF intro sequence.
 /// Beat 1:  "The" / "Funkin Crew Inc"
 /// Beat 3:  "presents"
 /// Beat 4:  clear
@@ -20,7 +20,7 @@ namespace FNF_MonoGame.Scenes;
 /// Beat 15: "Funkin"
 /// Beat 16: flash ? show title screen (logo + GF + "Press Enter")
 /// </summary>
-public class TitleScene : Scene
+public partial class TitleScene : Scene
 {
     // ?? Intro sequence state ??
     // BPM of the title screen music (freakyMenu.ogg). Hardcoded to match original FNF.
@@ -61,11 +61,12 @@ public class TitleScene : Scene
     private float _flashAlpha;
     private float _flashDuration = 4f; // original: flash(WHITE, 4) for intro, flash(WHITE, 1) for confirm
 
-    // ?? Static flag — only play intro once per session (like original) ??
+    // ?? Static flag ? only play intro once per session (like original) ??
     private static bool s_initialized;
 
     public override void Load()
     {
+        Game.Discord?.SetMenuState("Title Screen");
         _beatDuration = 60f / MENU_BPM;
 
         // Load title assets
@@ -77,14 +78,18 @@ public class TitleScene : Scene
         // Load random intro message
         LoadWackyText();
 
-        // Play menu music
+        // Play menu music (playMenuMusic: fade 0 -> 1 over 4 s when no music was playing, e.g. after AttractState)
+        bool hadMusic = Audio.MusicPlaying;
         Audio.PlayMusic("music/freakyMenu", true);
+        if (!hadMusic) Audio.FadeIn(4f, 0f, Audio.MusicVolume);
+        LoadTitleExtras();
 
         // If we already saw the intro this session, skip straight to the title screen
         if (s_initialized)
         {
             _skippedIntro = true;
             _songPosition = 99;
+            _flashAlpha = 1f; _flashDuration = 1f; // skipIntro: FlxG.camera.flash(WHITE, initialized ? 1 : 4)
         }
         else
         {
@@ -99,10 +104,10 @@ public class TitleScene : Scene
             // Original FNF: data/introText.txt
             string path = Assets.ResolvePath("data/introText.txt")
                        ?? Assets.ResolvePath("intro_messages.txt")
-                       ?? Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Content", "intro_messages.txt");
-            if (File.Exists(path))
+                       ?? System.IO.Path.Combine(FNF_MonoGame.Engine.AssetManager.ContentRoot, "intro_messages.txt");
+            if (global::FNF_MonoGame.Engine.FsCI.FileExists(path))
             {
-                var lines = File.ReadAllLines(path)
+                var lines = global::FNF_MonoGame.Engine.FsCI.ReadAllLines(path)
                     .Where(l => !string.IsNullOrWhiteSpace(l) && l.Contains("--"))
                     .ToArray();
                 if (lines.Length > 0)
@@ -134,11 +139,13 @@ public class TitleScene : Scene
     {
         float delta = (float)gameTime.ElapsedGameTime.TotalSeconds;
 
+        if (UpdateTitleExtras(delta)) return; // attract timer, hue keys, cheat code (may restart the music)
         // Track song position via audio manager
         _songPosition = Audio.MusicPosition / 1000.0; // ms ? s
 
         // Determine current beat
         int currentBeat = (int)(_songPosition / _beatDuration);
+        if (currentBeat < _lastBeat) _lastBeat = currentBeat - 1; // music looped / restarted (cheat track)
 
         // ?? Animate sprites (always running so they're ready when intro ends) ??
         _gfAnimTimer += delta;
@@ -199,7 +206,9 @@ public class TitleScene : Scene
             _gfFrame = 0; // Reset animation frame on dance direction switch
             _gfAnimTimer = 0;
 
-            // Logo bump on each beat — restart logo anim
+            if (_cheatActive && currentBeat % 2 == 0) _hue += 0.125f; // beatHit: swagShader.update(0.125)
+            if (_cheatActive) Console.WriteLine($"[TITLE] beat {currentBeat} hue={_hue:0.###} pos={Audio.MusicPosition:0}");
+            // Logo bump on each beat ? restart logo anim
             _logoFrame = 0;
             _logoAnimTimer = 0;
 
@@ -219,11 +228,14 @@ public class TitleScene : Scene
             _transitionTimer = 2f;
         }
 
-        // Exit game on Escape from title
+        // Exit game on Escape from title (PC only: the original TitleState never quits, and on Xbox a B press here
+        // closed the app - looked like a crash)
+#if !XBOX_UWP
         if (Input.BackPressed)
         {
             Game.Exit();
         }
+#endif
     }
 
     /// <summary>
@@ -312,10 +324,12 @@ public class TitleScene : Scene
 
         if (_skippedIntro)
         {
-            // ?? Title screen ??
+            // ?? Title screen ?? (logoBl, gfDance, titleText use swagShader = ColorSwap)
+            BeginColorSwap(spriteBatch);
             DrawGF(spriteBatch);
             DrawLogo(spriteBatch);
             DrawEnterPrompt(spriteBatch);
+            EndColorSwap(spriteBatch);
         }
         else
         {
@@ -331,8 +345,9 @@ public class TitleScene : Scene
         {
             spriteBatch.Draw(Assets.Pixel,
                 new Rectangle(0, 0, FNFGame.SCREEN_WIDTH, FNFGame.SCREEN_HEIGHT),
-                Color.White * _flashAlpha);
+                new Color(Color.White, _flashAlpha));
         }
+        DrawAttractFade(spriteBatch);
 
         spriteBatch.End();
     }
@@ -371,7 +386,7 @@ public class TitleScene : Scene
         }
     }
 
-    // Newgrounds logo — original: setGraphicSize(width*0.8), screenCenter(), y = FlxG.height * 0.52
+    // Newgrounds logo ? original: setGraphicSize(width*0.8), screenCenter(), y = FlxG.height * 0.52
     private void DrawNGLogo(SpriteBatch spriteBatch)
     {
         if (_ngLogo == null || _ngLogo == Assets.Pixel) return;
@@ -383,7 +398,7 @@ public class TitleScene : Scene
         spriteBatch.Draw(_ngLogo, new Rectangle(x, y, w, h), Color.White);
     }
 
-    // GF dancing — original: gfDance at (FlxG.width * 0.4, FlxG.height * 0.07), 1x scale
+    // GF dancing ? original: gfDance at (FlxG.width * 0.4, FlxG.height * 0.07), 1x scale
     private void DrawGF(SpriteBatch spriteBatch)
     {
         if (_gfSheet == null) return;
@@ -416,7 +431,8 @@ public class TitleScene : Scene
         return fullAnim;
     }
 
-    // Logo bumpin — original: logoBumpin at (-150, -100), setGraphicSize(width * 0.4)
+    // Logo bumpin: TitleState.hx (0.8.1) logoBl = new FlxSprite(-150 + cutout/2.5, -100), addByPrefix('bump','logo bumpin',24),
+    // updateHitbox() -- drawn at scale 1 (no setGraphicSize; the old 0.4 shrink came from an older FNF version)
     private void DrawLogo(SpriteBatch spriteBatch)
     {
         if (_logoSheet == null) return;
@@ -424,21 +440,12 @@ public class TitleScene : Scene
                   ?? _logoSheet.Animations.Values.FirstOrDefault();
         if (frames == null || frames.Count == 0) return;
         var frame = frames[_logoFrame % frames.Count];
-        // Original: setGraphicSize(Std.int(width * 0.4)) where width = frameWidth (939)
-        // Scale factor = targetWidth / sourceRect.Width per frame
-        int fw = frame.FrameWidth > 0 ? frame.FrameWidth : frame.SourceRect.Width;
-        float targetW = fw * 0.4f;
-        float logoScale = targetW / frame.SourceRect.Width;
-        float offX = frame.Offset.X * logoScale;
-        float offY = frame.Offset.Y * logoScale;
-        int w = (int)(frame.SourceRect.Width * logoScale);
-        int h = (int)(frame.SourceRect.Height * logoScale);
         spriteBatch.Draw(_logoSheet.Texture,
-            new Rectangle(-150 + (int)offX, -100 + (int)offY, w, h),
+            new Rectangle(-150 + (int)frame.Offset.X, -100 + (int)frame.Offset.Y, frame.SourceRect.Width, frame.SourceRect.Height),
             frame.SourceRect, Color.White);
     }
 
-    // "Press Enter to Begin" — original: titleEnter at (100, FlxG.height * 0.8), 1x scale
+    // "Press Enter to Begin" ? original: titleEnter at (100, FlxG.height * 0.8), 1x scale
     private void DrawEnterPrompt(SpriteBatch spriteBatch)
     {
         if (_enterSheet == null) return;
@@ -459,3 +466,4 @@ public class TitleScene : Scene
             frame.SourceRect, Color.White);
     }
 }
+

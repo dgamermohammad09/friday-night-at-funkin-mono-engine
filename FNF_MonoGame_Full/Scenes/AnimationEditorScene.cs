@@ -63,16 +63,16 @@ public class AnimationEditorScene : Scene
     {
         _sheetPaths.Clear();
         string root = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Content");
-        if (!System.IO.Directory.Exists(root)) return;
+        if (!global::FNF_MonoGame.Engine.FsCI.DirectoryExists(root)) return;
 
-        foreach (var png in System.IO.Directory.EnumerateFiles(root, "*.png", System.IO.SearchOption.AllDirectories))
+        foreach (var png in global::FNF_MonoGame.Engine.FsCI.EnumerateFiles(root, "*.png", System.IO.SearchOption.AllDirectories))
         {
             string baseName = System.IO.Path.ChangeExtension(png, null);
             string rel = System.IO.Path.GetRelativePath(root, baseName).Replace('\\', '/');
-            if (System.IO.File.Exists(baseName + ".xml") || System.IO.File.Exists(baseName + ".json") || System.IO.File.Exists(baseName + ".txt"))
+            if (global::FNF_MonoGame.Engine.FsCI.FileExists(baseName + ".xml") || global::FNF_MonoGame.Engine.FsCI.FileExists(baseName + ".json") || global::FNF_MonoGame.Engine.FsCI.FileExists(baseName + ".txt"))
                 _sheetPaths.Add(rel);
         }
-        foreach (var json in System.IO.Directory.EnumerateFiles(root, "spritemap1.json", System.IO.SearchOption.AllDirectories))
+        foreach (var json in global::FNF_MonoGame.Engine.FsCI.EnumerateFiles(root, "spritemap1.json", System.IO.SearchOption.AllDirectories))
         {
             string folder = System.IO.Path.GetDirectoryName(json);
             string rel = System.IO.Path.GetRelativePath(root, folder).Replace('\\', '/');

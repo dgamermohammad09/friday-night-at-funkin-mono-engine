@@ -60,3 +60,34 @@ namespace System.Runtime.CompilerServices
     }
 }
 #endif
+
+namespace FNF_MonoGame.Engine
+{
+    /// <summary>
+    /// Xbox/UWP no-op stub for Discord Rich Presence. Mirrors the desktop API so scenes compile,
+    /// but does nothing because Discord RPC is unavailable on Xbox.
+    /// </summary>
+    public class DiscordRPCManager : IDisposable
+    {
+        public bool IsInitialized => false;
+
+        public void Initialize(string customClientId = null) { }
+        public void Update(float deltaTime = 0f) { }
+
+        public void SetMenuState(string menuName = "Main Menu") { }
+        public void SetFreeplayState() { }
+        public void SetStoryModeState(string weekName = null) { }
+        public void SetCharacterSelectState() { }
+        public void SetOptionsState() { }
+        public void SetTitleState() { }
+
+        public void SetGameplayStart(string songName, string difficulty, string album, string opponent) { }
+        public void UpdateGameplayPresence(string songName, string difficulty, bool isStoryMode, string weekName, bool isPracticeMode = false, bool isBotPlayMode = false) { }
+        public void SetPaused(string songName, string difficulty, bool isStoryMode, string weekName, bool isPracticeMode = false, bool isBotPlayMode = false) { }
+        public void SetResumed(string songName, string difficulty, bool isStoryMode, string weekName, bool isPracticeMode = false, bool isBotPlayMode = false) { }
+        public void SetGameOver(string songName, string difficulty, bool isStoryMode, string weekName, bool isPracticeMode = false, bool isBotPlayMode = false) { }
+        public void SetResultsState(string songName, string difficulty, int score, float accuracy, bool isStoryMode, string weekName) { }
+
+        public void Dispose() { }
+    }
+}

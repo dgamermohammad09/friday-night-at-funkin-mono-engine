@@ -20,11 +20,41 @@ public class AssetManager : IDisposable
     /// Additional search roots for assets (e.g. funkin.assets directory).
     /// Searched in order after _contentPath.
     /// </summary>
-    private readonly List<string> _extraRoots = new();
+    private readonly HashSet<string> _extraRoots = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Add an extra search root (e.g. mod folder) for asset resolution.
+    /// Clears negative cache so previously-missed paths are retried.
+    /// </summary>
+    public void AddExtraRoot(string path)
+    {
+        if (!string.IsNullOrEmpty(path) && _extraRoots.Add(path))
+        {
+            _missingPaths.Clear();
+            _missingDirs.Clear();
+            Console.WriteLine($"[ASSETS] Added extra root: {path}");
+        }
+    }
+
+    /// <summary>
+    /// Remove an extra search root (e.g. when leaving a mod song).
+    /// </summary>
+    public void RemoveExtraRoot(string path)
+    {
+        if (_extraRoots.Remove(path))
+        {
+            _missingPaths.Clear();
+            _missingDirs.Clear();
+            Console.WriteLine($"[ASSETS] Removed extra root: {path}");
+        }
+    }
     
     // Font system
     private FontSystem _fontSystem;
     private Dictionary<int, SpriteFontBase> _fontCache = new();
+    // Named font systems (e.g. "5by7" bitmap font used by freeplay CapsuleText).
+    private readonly Dictionary<string, FontSystem> _namedFontSystems = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, SpriteFontBase> _namedFontCache = new(StringComparer.OrdinalIgnoreCase);
     
     // Pixel texture for drawing rectangles
     public Texture2D Pixel { get; private set; }
@@ -32,27 +62,102 @@ public class AssetManager : IDisposable
     // Pre-rendered smooth circle texture for button prompts
     private Texture2D _circleTexture;
     
+    /// <summary>Writable game root: Xbox/UWP = ApplicationData.LocalFolder (LocalState), desktop = exe folder.
+    /// Mods (mods/), saves and logs live here.</summary>
+    public static string GameRoot
+    {
+        get
+        {
+#if XBOX_UWP
+            try { return Windows.Storage.ApplicationData.Current.LocalFolder.Path; } catch { }
+#endif
+#if FNF_CROSSPLATFORM
+            if (GameRootOverride != null) return GameRootOverride;   // Android: app external files dir
+#endif
+            return AppDomain.CurrentDomain.BaseDirectory;
+        }
+    }
+
+    private static string _contentRoot;
+    /// <summary>Folder that holds the game Content. Xbox/UWP: LocalState\Content when it was uploaded/downloaded
+    /// there (Device Portal / ContentDownloader), otherwise the package's own Content folder. Desktop: exe\Content.
+    /// ALL file-based content lookups must go through this (AppDomain.BaseDirectory is the read-only package
+    /// folder on UWP and does not contain the uploaded Content).</summary>
+    public static string ContentRoot
+    {
+        get
+        {
+            if (_contentRoot != null) return _contentRoot;
+#if XBOX_UWP
+            string local = Path.Combine(GameRoot, "Content");
+            string installed = Path.Combine(Windows.ApplicationModel.Package.Current.InstalledLocation.Path, "Content");
+            // LocalState wins when it holds real game data (not just an empty folder).
+            _contentRoot = global::FNF_MonoGame.Engine.FsCI.DirectoryExists(Path.Combine(local, "data")) || !global::FNF_MonoGame.Engine.FsCI.DirectoryExists(Path.Combine(installed, "data")) ? local : installed;
+#elif FNF_CROSSPLATFORM
+            _contentRoot = ContentRootOverride ?? Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Content");
+#else
+            _contentRoot = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Content");
+#endif
+            return _contentRoot;
+        }
+    }
+#if FNF_CROSSPLATFORM
+    /// <summary>Set by the platform entry point before the game starts (Android: external storage folders).</summary>
+    public static string GameRootOverride, ContentRootOverride;
+    /// <summary>OpenGL shader bytecode folder (mgfxc /Profile:OpenGL builds of Shaders/*.fx; see Platforms/Shared).</summary>
+    public static string GlShaderDir = Path.Combine(AppContext.BaseDirectory, "Content-gl", "shaders");
+#endif
+
+    /// <summary>Re-evaluate <see cref="ContentRoot"/> (after the Xbox content download finished).</summary>
+    public static void ResetContentRoot() { _contentRoot = null; _pkgFallbackDone = false; }
+#if XBOX_UWP
+    private static string _pkgFallback; private static bool _pkgFallbackDone;
+    /// <summary>The package Content folder when <see cref="ContentRoot"/> is somewhere else (LocalState), else null.</summary>
+    public static string PackageContentFallback
+    {
+        get
+        {
+            if (_pkgFallbackDone) return _pkgFallback;
+            _pkgFallbackDone = true; _pkgFallback = null;
+            try
+            {
+                string installed = Path.Combine(Windows.ApplicationModel.Package.Current.InstalledLocation.Path, "Content");
+                if (global::FNF_MonoGame.Engine.FsCI.DirectoryExists(installed) && !string.Equals(Path.GetFullPath(installed).TrimEnd('\\'), Path.GetFullPath(ContentRoot).TrimEnd('\\'), StringComparison.OrdinalIgnoreCase))
+                    _pkgFallback = installed;
+            }
+            catch { }
+            return _pkgFallback;
+        }
+    }
+#else
+    private static bool _pkgFallbackDone;
+#endif
+
+    /// <summary>Texture2D.FromStream of a file with retries: on a busy console/PC the decode or the GPU texture
+    /// allocation can fail transiently ("This image format is not supported" wrapping the real error), which used to
+    /// abort a whole song load. Logs the inner error, collects garbage and tries again (3 attempts).</summary>
+    public static Texture2D TextureFromFile(GraphicsDevice gd, string path)
+    {
+        for (int attempt = 1; ; attempt++)
+        {
+            try
+            {
+                using var stream = global::FNF_MonoGame.Engine.FsCI.OpenRead(path);
+                { var __fl = FrameLog.Begin(); var __t = Texture2D.FromStream(gd, stream); if (FrameLog.Enabled) FrameLog.Event("tex " + System.IO.Path.GetFileName(path), FrameLog.Since(__fl)); return __t; }
+            }
+            catch (Exception ex) when (attempt < 3)
+            {
+                Console.WriteLine($"[ASSETS] texture load failed ({attempt}/3) {path}: {ex.Message} / {ex.InnerException?.GetType().Name}: {ex.InnerException?.Message}");
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+            }
+        }
+    }
+
     public AssetManager(Game game)
     {
         _game = game;
-#if XBOX_UWP
-        // Xbox: Content lives in LocalState folder (uploaded via Dev Portal),
-        // NOT in the MSIX package. This keeps the MSIX tiny for fast startup.
-        // Upload Content/ folder to: LocalState/Content/ via Xbox Dev Portal File Explorer.
-        string localState = Windows.Storage.ApplicationData.Current.LocalFolder.Path;
-        string localContent = Path.Combine(localState, "Content");
-        if (Directory.Exists(localContent))
-        {
-            _contentPath = localContent;
-        }
-        else
-        {
-            // Fallback: try package install location (for small test builds)
-            _contentPath = Path.Combine(Windows.ApplicationModel.Package.Current.InstalledLocation.Path, "Content");
-        }
-#else
-        _contentPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Content");
-#endif
+        _contentPath = ContentRoot;
         
         // Create pixel texture
         Pixel = new Texture2D(game.GraphicsDevice, 1, 1);
@@ -64,11 +169,21 @@ public class AssetManager : IDisposable
         // Initialize font system
         _fontSystem = new FontSystem();
 
+        // Store build: the official FNF assets are downloaded next to Content (LocalState\funkin.assets on Xbox);
+        // dev/test: FNF_FUNKIN_ASSETS=<folder>. Files missing from Content resolve through MapToFunkinAssets.
+        string storeAssets = Environment.GetEnvironmentVariable("FNF_FUNKIN_ASSETS");
+        if (string.IsNullOrEmpty(storeAssets)) storeAssets = Path.Combine(GameRoot, "funkin.assets");
+        if (global::FNF_MonoGame.Engine.FsCI.DirectoryExists(Path.Combine(storeAssets, "shared")))
+        {
+            _extraRoots.Add(storeAssets);
+            Console.WriteLine($"[STORE] official assets root: {storeAssets}");
+        }
 #if !XBOX_UWP
+        if (Environment.GetEnvironmentVariable("FNF_FUNKIN_ASSETS") == null) {
         // Auto-detect funkin.assets directory (original FNF release assets).
         // Search upward from the executable, then common sibling locations.
         // Skip on Xbox UWP — funkin.assets doesn't exist in the sandboxed package
-        // and Directory.Exists() calls are slow on Xbox.
+        // and global::FNF_MonoGame.Engine.FsCI.DirectoryExists() calls are slow on Xbox.
         string funkinAssets = FindFunkinAssets();
         if (funkinAssets != null)
         {
@@ -97,6 +212,7 @@ public class AssetManager : IDisposable
                 Console.WriteLine($"Found FNF_Official assets: {officialAssets}");
             }
         }
+}
 #endif
     }
     
@@ -113,7 +229,7 @@ public class AssetManager : IDisposable
         for (int i = 0; i < 6; i++)
         {
             string candidate = Path.Combine(dir, "funkin.assets");
-            if (Directory.Exists(candidate) && Directory.Exists(Path.Combine(candidate, "shared")))
+            if (global::FNF_MonoGame.Engine.FsCI.DirectoryExists(candidate) && global::FNF_MonoGame.Engine.FsCI.DirectoryExists(Path.Combine(candidate, "shared")))
                 return candidate;
             string parent = Path.GetDirectoryName(dir);
             if (parent == null || parent == dir) break;
@@ -134,7 +250,7 @@ public class AssetManager : IDisposable
         for (int i = 0; i < 7; i++)
         {
             string candidate = Path.Combine(dir, "FNF_Official", "assets");
-            if (Directory.Exists(candidate) && Directory.Exists(Path.Combine(candidate, "shared")))
+            if (global::FNF_MonoGame.Engine.FsCI.DirectoryExists(candidate) && global::FNF_MonoGame.Engine.FsCI.DirectoryExists(Path.Combine(candidate, "shared")))
                 return candidate;
 
             string parent = Path.GetDirectoryName(dir);
@@ -155,24 +271,82 @@ public class AssetManager : IDisposable
     
     public string ResolvePath(string relativePath)
     {
+        // V-Slice (Polymod) mods overlay the base assets: a mod file replaces the base file (VSliceMods.cs).
+        if (relativePath != null && VSliceMods.Any)
+        {
+            string vs = VSliceMods.Resolve(relativePath, ResolvePathBase);
+            if (vs != null) return vs;
+        }
+        return ResolvePathBase(relativePath);
+    }
+
+    private string ResolvePathBase(string relativePath)
+    {
         // Skip paths already known to be missing
         if (_missingPaths.Contains(relativePath))
             return null;
+#if FNF_CROSSPLATFORM
+        // OpenGL builds: Content/shaders/*.mgfx is DirectX bytecode -> use the GL build of the same shader.
+        if (relativePath.StartsWith("shaders/", StringComparison.OrdinalIgnoreCase) && relativePath.EndsWith(".mgfx", StringComparison.OrdinalIgnoreCase))
+        {
+            string gl = Path.Combine(GlShaderDir, relativePath.Substring(8));
+            if (global::FNF_MonoGame.Engine.FsCI.FileExists(gl)) return gl;
+        }
+#endif
         
         // 1. Content directory (primary)
         string full = Path.Combine(_contentPath, relativePath);
-        if (File.Exists(full)) return full;
+        if (global::FNF_MonoGame.Engine.FsCI.FileExists(full)) return full;
+#if XBOX_UWP
+        // 1b. Xbox: an older Content uploaded to LocalState wins over the package, but files it lacks (e.g. newer
+        // images/ui/prompts controller glyphs) still come from the package's own Content.
+        string pkgContent = PackageContentFallback;
+        if (pkgContent != null)
+        {
+            string pk = Path.Combine(pkgContent, relativePath);
+            if (global::FNF_MonoGame.Engine.FsCI.FileExists(pk)) return pk;
+        }
+#endif
+#if FNF_CROSSPLATFORM
+        // Case-sensitive file systems (Linux/Android): data was authored on Windows.
+        string fixedCase = PathCase.Fix(full);
+        if (fixedCase != null) return fixedCase;
+#endif
         
-        // 2. Search extra roots with path mapping
+        // 2. Search PsychMods dynamically
+        var activeMods = new List<string>();
+        string currentMod = FNF_MonoGame.Engine.PsychEngine.PsychMods.CurrentModDirectory;
+        if (!string.IsNullOrEmpty(currentMod))
+        {
+            string currentModPath = FNF_MonoGame.Engine.PsychEngine.PsychMods.GetModDirectory(currentMod);
+            if (currentModPath != null) activeMods.Add(currentModPath);
+        }
+        
+        foreach (var globalMod in FNF_MonoGame.Engine.PsychEngine.PsychMods.GetGlobalMods())
+        {
+            string globalModPath = FNF_MonoGame.Engine.PsychEngine.PsychMods.GetModDirectory(globalMod);
+            if (globalModPath != null) activeMods.Add(globalModPath);
+        }
+        
+        foreach (var modRoot in activeMods)
+        {
+            string direct = Path.Combine(modRoot, relativePath);
+            if (global::FNF_MonoGame.Engine.FsCI.FileExists(direct)) return direct;
+            
+            string mapped = MapToFunkinAssets(modRoot, relativePath);
+            if (mapped != null && global::FNF_MonoGame.Engine.FsCI.FileExists(mapped)) return mapped;
+        }
+
+        // 3. Search extra roots with path mapping
         foreach (var root in _extraRoots)
         {
             // Direct path under root
             string direct = Path.Combine(root, relativePath);
-            if (File.Exists(direct)) return direct;
+            if (global::FNF_MonoGame.Engine.FsCI.FileExists(direct)) return direct;
             
             // Map game engine paths ? funkin.assets structure
             string mapped = MapToFunkinAssets(root, relativePath);
-            if (mapped != null && File.Exists(mapped)) return mapped;
+            if (mapped != null && global::FNF_MonoGame.Engine.FsCI.FileExists(mapped)) return mapped;
         }
         
         _missingPaths.Add(relativePath);
@@ -187,19 +361,49 @@ public class AssetManager : IDisposable
     /// </summary>
     public string ResolveDirectory(string relativePath)
     {
+        if (relativePath != null && VSliceMods.Any) { string vd = VSliceMods.ResolveDirectory(relativePath); if (vd != null) return vd; }
         if (_missingDirs.Contains(relativePath))
             return null;
         
         string full = Path.Combine(_contentPath, relativePath);
-        if (Directory.Exists(full)) return full;
+        if (global::FNF_MonoGame.Engine.FsCI.DirectoryExists(full)) return full;
+#if FNF_CROSSPLATFORM
+        string fixedDir = PathCase.Fix(full, directory: true);
+        if (fixedDir != null) return fixedDir;
+#endif
         
+        // 2. Search PsychMods dynamically
+        var activeMods = new List<string>();
+        string currentMod = FNF_MonoGame.Engine.PsychEngine.PsychMods.CurrentModDirectory;
+        if (!string.IsNullOrEmpty(currentMod))
+        {
+            string currentModPath = FNF_MonoGame.Engine.PsychEngine.PsychMods.GetModDirectory(currentMod);
+            if (currentModPath != null) activeMods.Add(currentModPath);
+        }
+        
+        foreach (var globalMod in FNF_MonoGame.Engine.PsychEngine.PsychMods.GetGlobalMods())
+        {
+            string globalModPath = FNF_MonoGame.Engine.PsychEngine.PsychMods.GetModDirectory(globalMod);
+            if (globalModPath != null) activeMods.Add(globalModPath);
+        }
+        
+        foreach (var modRoot in activeMods)
+        {
+            string direct = Path.Combine(modRoot, relativePath);
+            if (global::FNF_MonoGame.Engine.FsCI.DirectoryExists(direct)) return direct;
+            
+            string mapped = MapDirToFunkinAssets(modRoot, relativePath);
+            if (mapped != null && global::FNF_MonoGame.Engine.FsCI.DirectoryExists(mapped)) return mapped;
+        }
+
+        // 3. Search extra roots
         foreach (var root in _extraRoots)
         {
             string direct = Path.Combine(root, relativePath);
-            if (Directory.Exists(direct)) return direct;
+            if (global::FNF_MonoGame.Engine.FsCI.DirectoryExists(direct)) return direct;
             
             string mapped = MapDirToFunkinAssets(root, relativePath);
-            if (mapped != null && Directory.Exists(mapped)) return mapped;
+            if (mapped != null && global::FNF_MonoGame.Engine.FsCI.DirectoryExists(mapped)) return mapped;
         }
         
         _missingDirs.Add(relativePath);
@@ -231,15 +435,15 @@ public class AssetManager : IDisposable
             string rest = norm["game/stages/".Length..];
             // Try shared first
             string shared = Path.Combine(root, "shared", "images", rest);
-            if (File.Exists(shared)) return shared;
+            if (global::FNF_MonoGame.Engine.FsCI.FileExists(shared)) return shared;
             // Try each week folder
             for (int w = 1; w <= 7; w++)
             {
                 string weekPath = Path.Combine(root, $"week{w}", "images", rest);
-                if (File.Exists(weekPath)) return weekPath;
+                if (global::FNF_MonoGame.Engine.FsCI.FileExists(weekPath)) return weekPath;
             }
             string we1 = Path.Combine(root, "weekend1", "images", rest);
-            if (File.Exists(we1)) return we1;
+            if (global::FNF_MonoGame.Engine.FsCI.FileExists(we1)) return we1;
         }
         
         // game/skins/... ? shared/images/ui/...
@@ -253,7 +457,7 @@ public class AssetManager : IDisposable
         if (norm.StartsWith("images/"))
         {
             string shared = Path.Combine(root, "shared", norm);
-            if (File.Exists(shared)) return shared;
+            if (global::FNF_MonoGame.Engine.FsCI.FileExists(shared)) return shared;
             return Path.Combine(root, "preload", norm);
         }
         
@@ -265,7 +469,7 @@ public class AssetManager : IDisposable
         if (norm.StartsWith("sounds/"))
         {
             string shared = Path.Combine(root, "shared", norm);
-            if (File.Exists(shared)) return shared;
+            if (global::FNF_MonoGame.Engine.FsCI.FileExists(shared)) return shared;
             return Path.Combine(root, "preload", norm);
         }
         
@@ -292,20 +496,20 @@ public class AssetManager : IDisposable
         {
             string rest = norm["game/stages/".Length..];
             string shared = Path.Combine(root, "shared", "images", rest);
-            if (Directory.Exists(shared)) return shared;
+            if (global::FNF_MonoGame.Engine.FsCI.DirectoryExists(shared)) return shared;
             for (int w = 1; w <= 7; w++)
             {
                 string weekPath = Path.Combine(root, $"week{w}", "images", rest);
-                if (Directory.Exists(weekPath)) return weekPath;
+                if (global::FNF_MonoGame.Engine.FsCI.DirectoryExists(weekPath)) return weekPath;
             }
             string we1 = Path.Combine(root, "weekend1", "images", rest);
-            if (Directory.Exists(we1)) return we1;
+            if (global::FNF_MonoGame.Engine.FsCI.DirectoryExists(we1)) return we1;
         }
         
         if (norm.StartsWith("images/"))
         {
             string shared = Path.Combine(root, "shared", norm);
-            if (Directory.Exists(shared)) return shared;
+            if (global::FNF_MonoGame.Engine.FsCI.DirectoryExists(shared)) return shared;
             return Path.Combine(root, "preload", norm);
         }
         
@@ -319,6 +523,12 @@ public class AssetManager : IDisposable
     {
         // Load fonts (required for all text rendering)
         LoadFont("fonts/vcr.ttf");
+        // 5by7 is the bitmap-ish font the original FNF uses for freeplay CapsuleText.
+        LoadNamedFont("5by7", "fonts/5by7_b.ttf");
+        LoadNamedFont("5by7", "fonts/5by7.ttf");
+        // FlxText font "5by7" with bold=false / true resolves to the regular (dotted) / bold TTF separately.
+        LoadNamedFont("5by7-regular", "fonts/5by7.ttf");
+        LoadNamedFont("5by7-bold", "fonts/5by7_b.ttf");
 
         // NOTE: Do NOT bulk-load textures from menus/, game/ui/, etc. here.
         // Loading 200+ PNGs synchronously blocks the game loop for several seconds,
@@ -330,9 +540,9 @@ public class AssetManager : IDisposable
     public void LoadFont(string path)
     {
         string fullPath = Path.Combine(_contentPath, path);
-        if (File.Exists(fullPath))
+        if (global::FNF_MonoGame.Engine.FsCI.FileExists(fullPath))
         {
-            byte[] fontData = File.ReadAllBytes(fullPath);
+            byte[] fontData = global::FNF_MonoGame.Engine.FsCI.ReadAllBytes(fullPath);
             _fontSystem.AddFont(fontData);
             Console.WriteLine($"Loaded font: {path}");
         }
@@ -351,7 +561,55 @@ public class AssetManager : IDisposable
         _fontCache[size] = font;
         return font;
     }
+
+    /// <summary>
+    /// Add a secondary TTF to a named FontSystem so individual screens can use
+    /// dedicated fonts (e.g. the freeplay "5by7" bitmap font).
+    /// </summary>
+    public void LoadNamedFont(string name, string path)
+    {
+        string fullPath = Path.Combine(_contentPath, path);
+        if (!global::FNF_MonoGame.Engine.FsCI.FileExists(fullPath))
+        {
+            Console.WriteLine($"Named font not found: {fullPath}");
+            return;
+        }
+        if (!_namedFontSystems.TryGetValue(name, out var system))
+        {
+            system = new FontSystem();
+            _namedFontSystems[name] = system;
+        }
+        system.AddFont(global::FNF_MonoGame.Engine.FsCI.ReadAllBytes(fullPath));
+        Console.WriteLine($"Loaded named font '{name}': {path}");
+    }
+
+    /// <summary>
+    /// Get a SpriteFontBase for a previously registered named font, or null if not loaded.
+    /// </summary>
+    /// <summary>Named font at a fractional FontStash size (e.g. OpenFL em size * (ascent-descent)/unitsPerEm).</summary>
+    public SpriteFontBase GetNamedFontF(string name, float size)
+    {
+        string key = name + "@f" + size.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        if (_namedFontCache.TryGetValue(key, out var cached)) return cached;
+        if (!_namedFontSystems.TryGetValue(name, out var system)) return null;
+        var font = system.GetFont(size);
+        _namedFontCache[key] = font;
+        return font;
+    }
+
+    public SpriteFontBase GetNamedFont(string name, int size)
+    {
+        string key = name + "@" + size;
+        if (_namedFontCache.TryGetValue(key, out var cached))
+            return cached;
+        if (!_namedFontSystems.TryGetValue(name, out var system))
+            return null;
+        var font = system.GetFont(size);
+        _namedFontCache[key] = font;
+        return font;
+    }
     
+    internal static readonly bool AssetLog = Environment.GetEnvironmentVariable("FNF_ASSETLOG") == "1";
     public Texture2D LoadTexture(string path)
     {
         if (_textures.TryGetValue(path, out var cached))
@@ -367,8 +625,8 @@ public class AssetManager : IDisposable
             return Pixel; // Return pixel as fallback
         }
         
-        using var stream = File.OpenRead(fullPath);
-        var texture = Texture2D.FromStream(_game.GraphicsDevice, stream);
+        if (AssetLog) Console.WriteLine($"[ASSETLOAD] {fullPath}");
+        var texture = TextureFromFile(_game.GraphicsDevice, fullPath);
         // Skip PremultiplyAlpha — GetData/SetData causes multi-second freezes.
         // Use BlendState.NonPremultiplied when drawing instead.
         _textures[path] = texture;
@@ -378,13 +636,13 @@ public class AssetManager : IDisposable
     public void LoadTexturesFromFolder(string folder)
     {
         string fullPath = Path.Combine(_contentPath, folder);
-        if (!Directory.Exists(fullPath))
+        if (!global::FNF_MonoGame.Engine.FsCI.DirectoryExists(fullPath))
         {
             Console.WriteLine($"Folder not found: {fullPath}");
             return;
         }
         
-        foreach (var file in Directory.GetFiles(fullPath, "*.png", SearchOption.AllDirectories))
+        foreach (var file in global::FNF_MonoGame.Engine.FsCI.GetFiles(fullPath, "*.png", SearchOption.AllDirectories))
         {
             string relativePath = Path.GetRelativePath(_contentPath, file);
             LoadTexture(relativePath);
@@ -404,7 +662,7 @@ public class AssetManager : IDisposable
         
         try
         {
-            string json = File.ReadAllText(fullPath);
+            string json = global::FNF_MonoGame.Engine.FsCI.ReadAllText(fullPath);
             return JsonConvert.DeserializeObject<T>(json);
         }
         catch (Exception ex)
@@ -482,8 +740,18 @@ public class AssetManager : IDisposable
     /// Draw a high-quality controller button prompt (smooth circle + bold letter).
     /// Uses a pre-rendered anti-aliased circle texture for crisp rendering.
     /// </summary>
+    private readonly Dictionary<string, Texture2D> _glyphCache = new();
     public void DrawButtonPrompt(SpriteBatch sb, Microsoft.Xna.Framework.Input.Buttons btn, int x, int y, int size = 28, float alpha = 0.9f)
     {
+        // Prefer the readable Xbox glyph art (images/ui/prompts, see ButtonPrompts) when present
+        string gname = ButtonPrompts.PadGlyph(btn);   // xbox_* or ps_* (ControllerIcons)
+        if (!_glyphCache.TryGetValue(gname, out var glyph))
+        {
+            glyph = LoadTexture("images/ui/prompts/" + gname + ".png");
+            if (glyph == Pixel) glyph = null;
+            _glyphCache[gname] = glyph;
+        }
+        if (glyph != null) { sb.Draw(glyph, new Rectangle(x, y, size, size), new Color(Color.White, alpha)); return; }
         Color bgColor;
         string label;
         switch (btn)

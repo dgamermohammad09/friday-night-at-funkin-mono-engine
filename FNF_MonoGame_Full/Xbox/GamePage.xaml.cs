@@ -26,6 +26,14 @@ public sealed partial class GamePage : Page
             ApplicationView.PreferredLaunchWindowingMode = ApplicationViewWindowingMode.FullScreen;
             view.SetDesiredBoundsMode(ApplicationViewBoundsMode.UseCoreWindow);
 
+            // B on Xbox raises a system "back" request; unhandled at the app's root the console leaves the app
+            // (it looks like a crash when backing out of Options). The game handles B itself -> always mark it handled.
+            Windows.UI.Core.SystemNavigationManager.GetForCurrentView().BackRequested += (s, e) =>
+            {
+                e.Handled = true;
+                System.Console.WriteLine("[XBOX] BackRequested handled");
+            };
+
             // Hide the mouse cursor (Xbox shows a virtual mouse by default)
             Window.Current.CoreWindow.PointerCursor = null;
 
@@ -37,6 +45,7 @@ public sealed partial class GamePage : Page
                 launchArgs,
                 Windows.UI.Core.CoreWindow.GetForCurrentThread(),
                 swapChainPanel);
+            XboxSystemKeyboard.Install(swapChainPanel);   // Xbox keyboard for text fields + gamertag as online name
         }
         catch (System.Exception ex)
         {

@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Android build (MonoGame Android, OpenGL ES). Shares every engine source file with the PC / Xbox builds
+       (../Shared/FNF.Shared.props); Android-only code (touch UI, activity) lives in this folder and is compiled only here.
+       Build (no admin workload install needed, see setup_toolchain.sh / build_apk.sh):
+         bash Platforms/Android/build_apk.sh          -> Platforms/Android/bin/Debug/net9.0-android/*-Signed.apk
+       Game Content (~1.1 GB) is NOT inside the APK: the app reads it from
+         /sdcard/Android/data/com.fnfmonogame.engine/files/Content   (adb push / USB copy, or Content.zip there) -->
+  <Import Project="..\Shared\FNF.Shared.props" />
+
+  <PropertyGroup>
+    <TargetFramework>net9.0-android</TargetFramework>
+    <SupportedOSPlatformVersion>24</SupportedOSPlatformVersion>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>FNF_Android</AssemblyName>
+    <ApplicationId>com.fnfmonogame.engine</ApplicationId>
+    <ApplicationTitle>FNF MonoGame</ApplicationTitle>
+    <ApplicationVersion>1</ApplicationVersion>
+    <ApplicationDisplayVersion>1.0</ApplicationDisplayVersion>
+    <RuntimeIdentifiers>android-arm64</RuntimeIdentifiers>
+    <DefineConstants>$(DefineConstants);OPENGL;FNF_CROSSPLATFORM;FNF_PORTABLE_VIDEO</DefineConstants>
+    <AndroidPackageFormat>apk</AndroidPackageFormat>
+    <!-- standalone debug APK (no fast deployment / shared runtime: there is no device attached at build time) -->
+    <EmbedAssembliesIntoApk>true</EmbedAssembliesIntoApk>
+    <AndroidLinkMode>None</AndroidLinkMode>
+    <PublishTrimmed>false</PublishTrimmed>
+    <RunAOTCompilation>false</RunAOTCompilation>
+    <AndroidEnableProfiledAot>false</AndroidEnableProfiledAot>
+    <MonoGamePlatform>Android</MonoGamePlatform>
+    <NoWarn>$(NoWarn);XA0141;XA1006;CA1422;CA1416;NU1701</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="MonoGame.Framework.Android" Version="3.8.1.303" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="*.cs" />
+    <!-- OpenGL ES shader bytecode (same mgfxc /Profile:OpenGL output as DesktopGL), extracted to files/shaders_gl at start -->
+    <AndroidAsset Include="..\Shared\shaders_gl\*.mgfx" Link="Assets\shaders_gl\%(Filename)%(Extension)" />
+  </ItemGroup>
+</Project>

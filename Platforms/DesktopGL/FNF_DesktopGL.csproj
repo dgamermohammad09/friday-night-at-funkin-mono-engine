@@ -1,0 +1,53 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Cross-platform desktop build (Linux / macOS / Windows) on MonoGame DesktopGL (SDL2 + OpenGL + OpenAL).
+       Shares every source file with the Windows DX build (see ../Shared/FNF.Shared.props).
+       Build:    dotnet build Platforms/DesktopGL/FNF_DesktopGL.csproj -c Debug
+       Publish:  dotnet publish Platforms/DesktopGL/FNF_DesktopGL.csproj -c Release -p:PublishProfile=linux-x64   (osx-x64, osx-arm64, win-x64)
+       Content (~1.1 GB) is NOT copied into the output: put / link the game's Content folder next to the executable
+       (see Platforms/README_PLATFORMS.md). -->
+  <Import Project="..\Shared\FNF.Shared.props" />
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>FNF_DesktopGL</AssemblyName>
+    <DefineConstants>$(DefineConstants);DESKTOPGL;OPENGL;FNF_CROSSPLATFORM</DefineConstants>
+    <ApplicationManifest>..\..\FNF_MonoGame_Full\app.manifest</ApplicationManifest>
+    <TieredPGO>true</TieredPGO>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <RollForward>Major</RollForward>
+    <!-- MonoGame DesktopGL embeds public NVorbis types (see Shared props) -->
+    <FnfAliasNVorbis>true</FnfAliasNVorbis>
+    <!-- macOS bundles / Linux: keep the native SDL/OpenAL libraries next to the exe -->
+    <UseAppHost>true</UseAppHost>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="MonoGame.Framework.DesktopGL" Version="3.8.1.303" />
+  </ItemGroup>
+
+  <!-- Dev only: `-p:TouchTest=true` compiles the ANDROID touch UI layer into this desktop build (mouse = finger,
+       FNF_DEVTOUCH = scripted fingers) so the Android UI can be checked on a PC. Normal builds never include it. -->
+  <PropertyGroup Condition="'$(TouchTest)' == 'true'">
+    <DefineConstants>$(DefineConstants);TOUCH_TEST</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(TouchTest)' == 'true'">
+    <Compile Include="..\Android\TouchControls.cs;..\Android\PlayScene.Touch.cs" Link="TouchTest\%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <!-- Compiled OpenGL shader bytecode (mgfxc /Profile:OpenGL) lives in the repo (Platforms/DesktopGL/shaders_gl) and is
+       copied to <out>/Content-gl/shaders; AssetManager maps shaders/X.mgfx -> that folder on OpenGL builds. -->
+  <ItemGroup>
+    <None Include="..\Shared\shaders_gl\*.mgfx" Link="Content-gl\shaders\%(Filename)%(Extension)">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </None>
+    <None Include="..\README_PLATFORMS.md" Link="README_PLATFORMS.md" Condition="Exists('..\README_PLATFORMS.md')">
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </None>
+    <None Include="link_content.sh;link_content.cmd" Condition="Exists('link_content.sh')">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </None>
+  </ItemGroup>
+</Project>

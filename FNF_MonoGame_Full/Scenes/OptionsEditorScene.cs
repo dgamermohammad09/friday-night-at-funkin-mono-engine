@@ -1,4 +1,4 @@
-﻿using Microsoft.Xna.Framework;
+using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using Microsoft.Xna.Framework.Input;
 using FNF_MonoGame.Engine;
@@ -243,7 +243,7 @@ public class OptionsEditorScene : Scene
             else if (opt.Name == "Save File")
             {
                 string sp = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "save_data.json");
-                bool exists = System.IO.File.Exists(sp);
+                bool exists = global::FNF_MonoGame.Engine.FsCI.FileExists(sp);
                 EditorUI.PropertyRow(sb, px, fontSm, rx + 4, y, pw, "Path", "save_data.json"); y += 18;
                 EditorUI.PropertyRow(sb, px, fontSm, rx + 4, y, pw, "Exists", exists ? "Yes" : "No"); y += 18;
                 if (exists)

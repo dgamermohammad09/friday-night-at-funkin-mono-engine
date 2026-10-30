@@ -6,4 +6,10 @@
     <Project Path="FNF_MonoGame_Full/Xbox/FNF_Xbox.csproj" Id="a1b2c3d4-e5f6-7890-abcd-ef1234567890" />
     <Project Path="FNF_MonoGame_Xbox/FNF_MonoGame_Xbox.csproj" />
   </Folder>
+  <Folder Name="/Linux-macOS/">
+    <Project Path="Platforms/DesktopGL/FNF_DesktopGL.csproj" />
+  </Folder>
+  <Folder Name="/Android/">
+    <Project Path="Platforms/Android/FNF_Android.csproj" />
+  </Folder>
 </Solution>

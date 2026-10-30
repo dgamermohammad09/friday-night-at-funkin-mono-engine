@@ -1,78 +1,84 @@
+###############################################################################
+# Upload content.zip (and/or mods.zip) into the game's LocalState on an Xbox in Dev Mode
+# via the Windows Device Portal REST API. The game unpacks them on its next start:
+#   LocalState\content.zip -> LocalState\Content     LocalState\mods.zip -> LocalState\mods
+#
+# Only needed for the small code-only .msix (the *_full.msix already contains Content) or to add mods.
+#
+# USAGE:
+#   .\upload_content_to_xbox.ps1 -XboxIP 192.168.1.50                      # builds content.zip if missing, uploads it
+#   .\upload_content_to_xbox.ps1 -XboxIP 192.168.1.50 -ModsZip .\mods.zip -SkipContent
+# Device Portal user/password = the ones set in Dev Home > Remote Access Settings.
+#
+# Note: the Device Portal file API can upload a file into an EXISTING folder only (it cannot create
+# folders), which is why content goes up as one zip instead of 2500 loose files.
+###############################################################################
 param(
-    [Parameter(Mandatory=$true)]
-    [string]$XboxIP,
-    [string]$Username = "DevToolsUser",
-    [string]$Password
+    [Parameter(Mandatory=$true)][string]$XboxIP,
+    [string]$Username = "",
+    [string]$Password = "",
+    [string]$ContentZip = (Join-Path $PSScriptRoot "content.zip"),
+    [string]$ModsZip = "",
+    [switch]$SkipContent,
+    [string]$PackageName = "FridayNightFunkin.MonoGame"
 )
+$ErrorActionPreference = "Stop"
+Add-Type -AssemblyName System.Net.Http
 
-# Upload Content folder to Xbox's LocalState via Dev Portal REST API
-$ContentPath = Join-Path $PSScriptRoot "..\Content"
-if (-not (Test-Path $ContentPath)) {
-    Write-Error "Content folder not found at $ContentPath"
-    exit 1
-}
-
-# Prompt for password if not provided
+if (-not $Username) { $Username = Read-Host "Device Portal user name" }
 if (-not $Password) {
-    $secPass = Read-Host "Enter Xbox Device Portal password" -AsSecureString
-    $cred = New-Object System.Management.Automation.PSCredential($Username, $secPass)
-} else {
-    $secPass = ConvertTo-SecureString $Password -AsPlainText -Force
-    $cred = New-Object System.Management.Automation.PSCredential($Username, $secPass)
+    $sec = Read-Host "Device Portal password" -AsSecureString
+    $Password = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec))
 }
 
-$BaseUrl = "https://${XboxIP}:11443/api/filesystem/apps/file"
-$PackageName = "FridayNightFunkin.MonoGame_1.0.0.0_x64__g4pcqteb2n0dr"
+$handler = New-Object System.Net.Http.HttpClientHandler
+$handler.ServerCertificateCustomValidationCallback = { $true }   # Device Portal uses a self-signed cert
+$handler.CookieContainer = New-Object System.Net.CookieContainer
+$client = New-Object System.Net.Http.HttpClient($handler)
+$client.Timeout = [TimeSpan]::FromHours(3)
+$base = "https://${XboxIP}:11443"
 
-# Build common params for Invoke-RestMethod (handle PS version differences for SSL)
-$restParams = @{ Credential = $cred }
-if ($PSVersionTable.PSVersion.Major -ge 7) {
-    $restParams['SkipCertificateCheck'] = $true
-} else {
-    # PowerShell 5.x: ignore self-signed cert
-    Add-Type @"
-using System.Net;
-using System.Security.Cryptography.X509Certificates;
-public class TrustAll : ICertificatePolicy {
-    public bool CheckValidationResult(ServicePoint sp, X509Certificate cert, WebRequest req, int problem) { return true; }
-}
-"@
-    [System.Net.ServicePointManager]::CertificatePolicy = New-Object TrustAll
+function SetAuth([string]$user) {
+    $b = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("${user}:$Password"))
+    $client.DefaultRequestHeaders.Authorization = New-Object System.Net.Http.Headers.AuthenticationHeaderValue("Basic", $b)
 }
 
-Write-Host "Uploading Content to Xbox at $XboxIP ..." -ForegroundColor Green
-Write-Host "Package: $PackageName" -ForegroundColor Yellow
-Write-Host ""
+# 1. find the installed package (this GET also delivers the CSRF cookie needed for POST)
+SetAuth "auto-$Username"     # "auto-" prefix = no browser-style auth prompt (Device Portal convention)
+$resp = $client.GetAsync("$base/api/app/packagemanager/packages").Result
+if (-not $resp.IsSuccessStatusCode) { SetAuth $Username; $resp = $client.GetAsync("$base/api/app/packagemanager/packages").Result }
+if (-not $resp.IsSuccessStatusCode) { throw "Device Portal login failed: $($resp.StatusCode)" }
+$pkgs = ($resp.Content.ReadAsStringAsync().Result | ConvertFrom-Json).InstalledPackages
+$pkg = $pkgs | Where-Object { $_.PackageFullName -like "$PackageName*" } | Select-Object -First 1
+if (-not $pkg) { throw "The game is not installed on the Xbox (install the .msix first)." }
+$pfn = $pkg.PackageFullName
+Write-Host "Package: $pfn" -ForegroundColor Green
+$csrf = ($handler.CookieContainer.GetCookies([Uri]$base) | Where-Object Name -eq "CSRF-Token").Value
+if ($csrf) { $client.DefaultRequestHeaders.Add("X-CSRF-Token", $csrf) }
 
-$files = Get-ChildItem $ContentPath -Recurse -File
-$total = $files.Count
-$i = 0
-$failed = 0
-
-foreach ($file in $files) {
-    $i++
-    $relativePath = $file.FullName.Substring($ContentPath.Length + 1).Replace("\", "/")
-    $xboxPath = "LocalState/Content/$relativePath"
-
-    $pct = [Math]::Round($i / $total * 100)
-    Write-Progress -Activity "Uploading to Xbox" -Status "$pct% ($i/$total) $relativePath" -PercentComplete $pct
-
-    $url = "${BaseUrl}?knownfolderid=LocalAppData&packagefullname=${PackageName}&path=${xboxPath}"
-
+function Upload([string]$file) {
+    $name = [IO.Path]::GetFileName($file)
+    $size = (Get-Item $file).Length / 1MB
+    Write-Host ("Uploading {0} ({1:N0} MB) to LocalState ..." -f $name, $size) -ForegroundColor Yellow
+    $url = "$base/api/filesystem/apps/file?knownfolderid=LocalAppData&packagefullname=$([Uri]::EscapeDataString($pfn))&path=$([Uri]::EscapeDataString('\LocalState'))"
+    $fs = [IO.File]::OpenRead($file)
     try {
-        $bytes = [System.IO.File]::ReadAllBytes($file.FullName)
-        Invoke-RestMethod -Uri $url -Method Put -Body $bytes -ContentType "application/octet-stream" @restParams -ErrorAction Stop | Out-Null
-    }
-    catch {
-        $failed++
-        Write-Warning "Failed: $relativePath - $_"
-    }
+        $content = New-Object System.Net.Http.MultipartFormDataContent
+        $sc = New-Object System.Net.Http.StreamContent($fs)
+        $content.Add($sc, $name, $name)
+        $r = $client.PostAsync($url, $content).Result
+        if (-not $r.IsSuccessStatusCode) { throw "upload of $name failed: $($r.StatusCode) $($r.Content.ReadAsStringAsync().Result)" }
+    } finally { $fs.Dispose() }
+    Write-Host "  done" -ForegroundColor Green
 }
 
-Write-Host ""
-if ($failed -eq 0) {
-    Write-Host "Done! Uploaded $total files to Xbox LocalState/Content/" -ForegroundColor Green
-} else {
-    Write-Host "Done! Uploaded $($total - $failed)/$total files ($failed failed)" -ForegroundColor Yellow
+if (-not $SkipContent) {
+    if (-not (Test-Path $ContentZip)) { & (Join-Path $PSScriptRoot "package_content.ps1") -OutputZip $ContentZip }
+    if ([IO.Path]::GetFileName($ContentZip) -ne "content.zip") { throw "the uploaded file must be named content.zip" }
+    Upload $ContentZip
 }
-Write-Host "You can now launch the game on Xbox." -ForegroundColor Green
+if ($ModsZip) {
+    if ([IO.Path]::GetFileName($ModsZip) -ne "mods.zip") { throw "the mods archive must be named mods.zip" }
+    Upload $ModsZip
+}
+Write-Host "Start the game on the Xbox: it unpacks the zip(s) on the loading screen." -ForegroundColor Green

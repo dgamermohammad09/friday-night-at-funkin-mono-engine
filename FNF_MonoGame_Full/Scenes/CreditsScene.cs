@@ -120,11 +120,47 @@ public class CreditsScene : Scene
             });
         }
 
+        AddPsychModCredits();
+
         _entries.Add(new CreditEntry
         {
             Header = "MONOGAME PORT",
             Lines = new List<string> { "mohammad aljafari" }
         });
+    }
+
+    /// <summary>Psych CreditsState.pushModCreditsToList: every enabled mod's data/credits.txt (lines 'name::icon::desc::link::color',
+    /// a line without '::' separators is a section title). Shown in the original game's scrolling credits style:
+    /// sections become headers, people become "name - description" lines.</summary>
+    private void AddPsychModCredits()
+    {
+        try
+        {
+            foreach (var mod in FNF_MonoGame.Engine.PsychEngine.PsychMods.GetAllMods())
+            {
+                if (!mod.Enabled) continue;
+                string dir = FNF_MonoGame.Engine.PsychEngine.PsychMods.GetModDirectory(mod.Name);
+                string f = dir == null ? null : System.IO.Path.Combine(dir, "data", "credits.txt");
+                if (f == null || !global::FNF_MonoGame.Engine.FsCI.FileExists(f)) continue;
+                List<string> cur = null;
+                foreach (var raw in global::FNF_MonoGame.Engine.FsCI.ReadAllLines(f))
+                {
+                    var parts = raw.Split(new[] { "::" }, StringSplitOptions.None);
+                    if (string.IsNullOrWhiteSpace(raw)) continue;
+                    if (parts.Length < 2)
+                    {
+                        cur = new List<string>();
+                        _entries.Add(new CreditEntry { Header = parts[0].Trim().ToUpperInvariant(), Lines = cur });
+                        continue;
+                    }
+                    if (cur == null) { cur = new List<string>(); _entries.Add(new CreditEntry { Header = mod.Name.ToUpperInvariant(), Lines = cur }); }
+                    string name = parts[0].Trim(), desc = parts.Length > 2 ? parts[2].Trim() : "";
+                    cur.Add(desc.Length > 0 ? name + " - " + desc : name);
+                }
+                Console.WriteLine("[CREDITS] mod credits from " + mod.Name + ": " + _entries.Count + " entries total");
+            }
+        }
+        catch (Exception ex) { Console.WriteLine("[CREDITS] mod credits: " + ex.Message); }
     }
 
     private void BuildNextLine()

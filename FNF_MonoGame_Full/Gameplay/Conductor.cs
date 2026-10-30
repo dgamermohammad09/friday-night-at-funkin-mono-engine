@@ -19,6 +19,23 @@ public class Conductor
     // Events
     public event Action<int> OnBeat;
     public event Action<int> OnStep;
+    /// <summary>Fire stepHit/beatHit for steps skipped by a frame hitch (Psych mods: scripts key on exact
+    /// curStep values; native Psych never skips at 60 fps, the port's hitches made VS Majin miss step 405).</summary>
+    public bool CatchUpSkipped { get; set; }
+    /// <summary>Psych mode: MusicBeatState.update computes curStep from the position of the PREVIOUS frame, so stepHit/beatHit
+    /// for a boundary crossed by this frame's advance run in the next frame (after onUpdate). When set, beat/step events
+    /// are queued and fired by FlushDeferred().</summary>
+    public bool DeferEvents { get; set; }
+    private readonly System.Collections.Generic.List<(bool Beat, int V)> _deferred = new System.Collections.Generic.List<(bool, int)>();
+    private void FireBeat(int b) { if (DeferEvents) _deferred.Add((true, b)); else OnBeat?.Invoke(b); }
+    private void FireStep(int st) { if (DeferEvents) _deferred.Add((false, st)); else OnStep?.Invoke(st); }
+    public void FlushDeferred()
+    {
+        if (_deferred.Count == 0) return;
+        var q = _deferred.ToArray(); _deferred.Clear();
+        foreach (var e in q) { if (e.Beat) OnBeat?.Invoke(e.V); else OnStep?.Invoke(e.V); }
+    }
+    public void ClearDeferred() => _deferred.Clear();
     
     private int _lastBeat = -1;
     private int _lastStep = -1;
@@ -88,38 +105,51 @@ public class Conductor
     /// Recalculates the current BPM section data for an arbitrary time position.
     /// Handles both forward and backward seeks.
     /// </summary>
-    private void RecalculateSectionForTime(double time)
+    private void RecalculateSectionForTime(double time) => UpdateBeatAndStep(time);
+
+    /// <summary>V-Slice Conductor.update: the current time change is the last one with timeStamp &lt;= songPosition;
+    /// stepTime = roundDecimal(beatTime * 4 + (songPosition - timeStamp) / stepLength, 6); beat/step = floor.
+    /// Time-change beatTime comes from Conductor.mapTimeChanges (continuous, roundDecimal 4) - a time change that
+    /// falls between two beats (e.g. spaghetti b = 28.4272) does NOT restart the beat grid.</summary>
+    private void UpdateBeatAndStep(double pos)
     {
-        _sectionStartBeat = 0;
-        _sectionStartStep = 0;
-        _sectionStartTime = 0;
         _currentBpmIndex = 0;
-        
+        double tcTime = 0, tcBeat = 0;
         if (_bpmChanges.Count > 0)
         {
             BPM = _bpmChanges[0].Bpm;
-            _sectionStartTime = _bpmChanges[0].Time;
-            
-            for (int i = 1; i < _bpmChanges.Count; i++)
+            tcTime = _bpmChanges[0].Time; tcBeat = 0;
+            if (pos > 0)
             {
-                if (_bpmChanges[i].Time > time) break;
-                
-                // Accumulate beats/steps from previous section
-                double prevCrochet = 60.0 / BPM;
-                double sectionDuration = _bpmChanges[i].Time - _sectionStartTime;
-                _sectionStartBeat += (int)(sectionDuration / prevCrochet);
-                _sectionStartStep += (int)(sectionDuration / (prevCrochet / 4.0));
-                _sectionStartTime = _bpmChanges[i].Time;
-                BPM = _bpmChanges[i].Bpm;
-                _currentBpmIndex = i;
+                for (int i = 1; i < _bpmChanges.Count; i++)
+                {
+                    if (pos < _bpmChanges[i].Time) break;
+                    double prevBpm = _bpmChanges[i - 1].Bpm;
+                    double bt = tcBeat + (_bpmChanges[i].Time - _bpmChanges[i - 1].Time) * prevBpm / 60.0;
+                    tcBeat = Math.Round(bt * 10000.0, MidpointRounding.AwayFromZero) / 10000.0; // FlxMath.roundDecimal(.., 4)
+                    tcTime = _bpmChanges[i].Time;
+                    BPM = _bpmChanges[i].Bpm;
+                    _currentBpmIndex = i;
+                }
             }
         }
-        
-        double elapsed = time - _sectionStartTime;
-        CurrentBeat = _sectionStartBeat + (int)(elapsed / Crochet);
-        CurrentStep = _sectionStartStep + (int)(elapsed / StepCrochet);
+        _sectionStartTime = tcTime;
+        if (pos > 0)
+        {
+            double stepTime = tcBeat * 4.0 + (pos - tcTime) / StepCrochet;
+            stepTime = Math.Round(stepTime * 1e6, MidpointRounding.AwayFromZero) / 1e6;
+            CurrentStep = (int)Math.Floor(stepTime);
+            CurrentBeat = (int)Math.Floor(stepTime / 4.0);
+            _sectionStartBeat = (int)Math.Floor(tcBeat); _sectionStartStep = (int)Math.Floor(tcBeat * 4.0);
+        }
+        else
+        {
+            double elapsed = pos - tcTime;
+            CurrentBeat = (int)(elapsed / Crochet);
+            CurrentStep = (int)(elapsed / StepCrochet);
+        }
     }
-    
+
     public void ChangeBPM(float newBpm)
     {
         BPM = newBpm;
@@ -160,40 +190,24 @@ public class Conductor
         }
         
         // Process BPM changes — accumulate beats at each boundary
-        if (_bpmChanges.Count > 0)
-        {
-            while (_currentBpmIndex + 1 < _bpmChanges.Count 
-                   && _bpmChanges[_currentBpmIndex + 1].Time <= SongPosition)
-            {
-                int nextIdx = _currentBpmIndex + 1;
-                // Accumulate beats/steps from the current section
-                double prevCrochet = 60.0 / BPM;
-                double sectionDuration = _bpmChanges[nextIdx].Time - _sectionStartTime;
-                _sectionStartBeat += (int)(sectionDuration / prevCrochet);
-                _sectionStartStep += (int)(sectionDuration / (prevCrochet / 4.0));
-                _sectionStartTime = _bpmChanges[nextIdx].Time;
-                BPM = _bpmChanges[nextIdx].Bpm;
-                _currentBpmIndex = nextIdx;
-            }
-        }
-        
-        // Calculate current beat and step relative to the current BPM section
-        double elapsed = SongPosition - _sectionStartTime;
-        CurrentBeat = _sectionStartBeat + (int)(elapsed / Crochet);
-        CurrentStep = _sectionStartStep + (int)(elapsed / StepCrochet);
-        
-        // Fire beat event
+        UpdateBeatAndStep(SongPosition);
         if (CurrentBeat != _lastBeat)
         {
+            int prevBeat = _lastBeat;
             _lastBeat = CurrentBeat;
-            OnBeat?.Invoke(CurrentBeat);
+            if (CatchUpSkipped && CurrentBeat > prevBeat + 1 && CurrentBeat - prevBeat < 32 && prevBeat >= 0)
+                for (int b = prevBeat + 1; b < CurrentBeat; b++) FireBeat(b);
+            FireBeat(CurrentBeat);
         }
         
         // Fire step event
         if (CurrentStep != _lastStep)
         {
+            int prevStep = _lastStep;
             _lastStep = CurrentStep;
-            OnStep?.Invoke(CurrentStep);
+            if (CatchUpSkipped && CurrentStep > prevStep + 1 && CurrentStep - prevStep < 128 && prevStep >= 0)
+                for (int st = prevStep + 1; st < CurrentStep; st++) FireStep(st);
+            FireStep(CurrentStep);
         }
     }
     

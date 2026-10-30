@@ -96,17 +96,17 @@ public class AlphabetFont
         // Fallback to Content directory
         if (pngPath == null || xmlPath == null)
         {
-            string contentPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Content");
+            string contentPath = System.IO.Path.Combine(FNF_MonoGame.Engine.AssetManager.ContentRoot);
             pngPath ??= Path.Combine(contentPath, basePath + ".png");
             xmlPath ??= Path.Combine(contentPath, basePath + ".xml");
         }
 
-        if (!File.Exists(pngPath) || !File.Exists(xmlPath))
+        if (!global::FNF_MonoGame.Engine.FsCI.FileExists(pngPath) || !global::FNF_MonoGame.Engine.FsCI.FileExists(xmlPath))
         {
             return null;
         }
 
-        using (var stream = File.OpenRead(pngPath))
+        using (var stream = global::FNF_MonoGame.Engine.FsCI.OpenRead(pngPath))
         {
             font.Texture = Texture2D.FromStream(FNFGame.Instance.GraphicsDevice, stream);
         }
@@ -216,6 +216,17 @@ public class AlphabetFont
             "vertical_bar" => '|',
             _ => null
         };
+    }
+
+    /// <summary>
+    /// Get the glyph for a single character, or null if not available.
+    /// </summary>
+    public AlphabetGlyph GetGlyph(char c)
+    {
+        char upper = char.ToUpper(c);
+        if (_glyphs.TryGetValue(upper, out var g)) return g;
+        if (_glyphs.TryGetValue(c, out var g2)) return g2;
+        return null;
     }
 
     /// <summary>
@@ -355,3 +366,4 @@ public class AlphabetFont
         DrawString(spriteBatch, text, new Vector2(x, y), color, scale, yBob, bobTimer);
     }
 }
+

@@ -1,4 +1,5 @@
-﻿using Microsoft.Xna.Framework;
+using System;
+using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using Microsoft.Xna.Framework.Input;
 using FNF_MonoGame.Engine;
@@ -43,16 +44,16 @@ public class StoryModeEditorScene : Scene
 
         // Discover week JSON files
         string root = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Content", "data", "levels");
-        if (System.IO.Directory.Exists(root))
+        if (global::FNF_MonoGame.Engine.FsCI.DirectoryExists(root))
         {
-            foreach (var f in System.IO.Directory.GetFiles(root, "*.json"))
+            foreach (var f in global::FNF_MonoGame.Engine.FsCI.GetFiles(root, "*.json"))
             {
                 string id = System.IO.Path.GetFileNameWithoutExtension(f);
                 try
                 {
-                    var data = JObject.Parse(System.IO.File.ReadAllText(f));
-                    var songs = (data["songs"] as JArray)?.Select(s => s.ToString()).ToArray() ?? Array.Empty<string>();
-                    var props = (data["props"] as JArray)?.Select(p => p["assetPath"]?.ToString() ?? "?").ToArray() ?? Array.Empty<string>();
+                    var data = JObject.Parse(global::FNF_MonoGame.Engine.FsCI.ReadAllText(f));
+                    var songs = (data["songs"] as JArray)?.Select(s => s.ToString()).ToArray() ?? System.Array.Empty<string>();
+                    var props = (data["props"] as JArray)?.Select(p => p["assetPath"]?.ToString() ?? "?").ToArray() ?? System.Array.Empty<string>();
                     var diffs = (data["difficulties"] as JArray)?.Select(d => d.ToString()).ToArray() ?? new[] { "easy", "normal", "hard" };
                     _weeks.Add(new WeekInfo
                     {
@@ -62,7 +63,7 @@ public class StoryModeEditorScene : Scene
                         BannerAsset = $"menus/story_menu/weeks/{id}.png"
                     });
                 }
-                catch { _weeks.Add(new WeekInfo { Id = id, DisplayName = id, Songs = Array.Empty<string>(), Props = Array.Empty<string>(), Difficulties = new[] { "easy", "normal", "hard" } }); }
+                catch { _weeks.Add(new WeekInfo { Id = id, DisplayName = id, Songs = System.Array.Empty<string>(), Props = System.Array.Empty<string>(), Difficulties = new[] { "easy", "normal", "hard" } }); }
             }
         }
     }
