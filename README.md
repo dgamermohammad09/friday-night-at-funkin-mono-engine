@@ -37,8 +37,8 @@ with built-in support for Psych Engine and V-Slice mods as an extra.
 | ![Gameplay](docs/images/2_gameplay.png) | ![Freeplay](docs/images/3_freeplay.png) |
 | **Psych Online** | **Mod browser** |
 | ![Online](docs/images/4_online.png) | ![Mod browser](docs/images/5_mod_browser.png) |
-| **Psych mod (Silly Billy) on Xbox** | **Xbox controller notes** |
-| ![Mod gameplay](docs/images/6_mod_gameplay.png) | ![Controller notes](docs/images/7_controller_notes.png) |
+| **Psych mod (Silly Billy) on Xbox** | |
+| ![Mod gameplay](docs/images/6_mod_gameplay.png) | |
 
 ## Features
 - **The full official game** — Weeks 1–7, Weekend 1, Freeplay, Erect / Nightmare and Pico mixes, character select, results and cutscenes, matched to the original v0.8.1.
