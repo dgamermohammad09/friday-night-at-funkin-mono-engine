@@ -150,16 +150,3 @@ everyone in the [original credits](https://github.com/FunkinCrew/Funkin).
 The engine source code in this repository is free to read, learn from and build.
 Friday Night Funkin' art, music and characters belong to **The Funkin' Crew Inc.** and follow
 [their license](https://github.com/FunkinCrew/funkin.assets/blob/main/LICENSE.md). Mods belong to their own creators.
-
-## 🛡️ Security
-Alpha 2.3 program files (everything except the art/music `Content` folder, which is too big for VirusTotal's 650 MB limit) were scanned on VirusTotal:
-
-| File | Result |
-|---|---|
-| Windows program (`FNF_MonoGame.exe` + DLLs) | [1 / 65 — clean](https://www.virustotal.com/gui/file/92035fe4fcfefdddf31340ca16c4fae1324f32d6315d935181558f4eefeb428b) |
-| `FNF_MonoGame.exe` | [0 / 71 — clean](https://www.virustotal.com/gui/file/fe82a9965130ce26ec927659f63ca3d39a77173c5120a7bcfd2fd5caa39e153f) |
-| Linux program | [0 / 66 — clean](https://www.virustotal.com/gui/file/e468006503e2ea268f15341cc9af4d7c70754892e31b579385f49c67f49ec3df) |
-| Xbox package | [0 / 67 — clean](https://www.virustotal.com/gui/file/349a8bc9790692b4f4edd720e3be3fc1aec3040bbd252e9bbac9a14e8939aa7e) |
-
-The single Windows hit (VBA32 "TScope.Trojan.MSIL") is a generic guess that small antivirus engines often give to any .NET program; every major engine (Microsoft Defender, Kaspersky, ESET, Bitdefender, Avast…) reports it clean. The full source code is in this repository, so you can also build it yourself.
-
